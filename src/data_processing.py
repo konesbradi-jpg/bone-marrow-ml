@@ -45,7 +45,7 @@ def optimize_memory(df):
                     df[col] = df[col].astype(np.float32)
                     
     end_mem = df.memory_usage().sum() / 1024**2
-    print(f'Mémoire avant: {start_mem:.2f} MB - Après: {end_mem:.2f} MB') [cite: 50]
+    print(f'Mémoire avant: {start_mem:.2f} MB - Après: {end_mem:.2f} MB') 
     return df
 
 def handle_missing_values(df):
