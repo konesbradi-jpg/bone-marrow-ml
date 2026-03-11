@@ -62,6 +62,11 @@ def run_evaluation(data_path, model_path):
     plt.show()
 
 if __name__ == "__main__":
+    # 1. On garde le même fichier de données
     DATA_FILE = 'data/bone-marrow.arff' 
-    MODEL_FILE = 'modele_svm.pkl' # On pointe sur le fichier SVM
+    
+    # 2. ON MODIFIE CETTE LIGNE POUR LE 3ème MODÈLE
+    MODEL_FILE = 'modele_gb.pkl' 
+    
+    # 3. On lance l'évaluation
     run_evaluation(DATA_FILE, MODEL_FILE)

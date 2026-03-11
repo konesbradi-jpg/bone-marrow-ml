@@ -91,3 +91,22 @@ print(classification_report(y_test, y_pred))
 # 10. Sauvegarde du modèle (indispensable pour le fichier d'évaluation)
 joblib.dump(model_pipeline, 'modele_final.pkl')
 print("\nSuccès : Le fichier 'modele_final.pkl' a été généré !")
+from sklearn.ensemble import HistGradientBoostingClassifier
+
+# --- CONFIGURATION DU 3ème MODÈLE (Gradient Boosting) ---
+model_gb = Pipeline(steps=[
+    ('preprocessor', preprocessor),
+    ('classifier', HistGradientBoostingClassifier(class_weight='balanced', random_state=42))
+])
+
+# Entraînement du Gradient Boosting
+print("Entraînement du modèle Gradient Boosting en cours...")
+model_gb.fit(X_train, y_train)
+
+# Sauvegarde du troisième fichier
+joblib.dump(model_gb, 'modele_gb.pkl')
+
+print("\nFélicitations ! Le trio est complet :")
+print("- modele_rf.pkl (Forêt Aléatoire)")
+print("- modele_svm.pkl (SVM)")
+print("- modele_gb.pkl (Gradient Boosting)")
