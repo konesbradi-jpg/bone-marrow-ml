@@ -9,7 +9,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.metrics import classification_report
 
 # 1. Chargement des données
-df = pd.read_csv('data_transplantation.csv')
+from src.data_processing import load_and_clean_data
+df = load_and_clean_data('data/bone-marrow.arff')
 
 # 2. Séparation des caractéristiques (X) et de la cible (y)
 # On suppose que la colonne à prédire s'appelle 'survie' (0 ou 1)
