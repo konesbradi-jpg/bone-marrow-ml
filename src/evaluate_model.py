@@ -62,7 +62,6 @@ def run_evaluation(data_path, model_path):
     plt.show()
 
 if __name__ == "__main__":
-    # On ajoute 'data/' car c'est là que se trouve le fichier arff
     DATA_FILE = 'data/bone-marrow.arff' 
-    MODEL_FILE = 'modele_final.pkl'
+    MODEL_FILE = 'modele_svm.pkl' # On pointe sur le fichier SVM
     run_evaluation(DATA_FILE, MODEL_FILE)

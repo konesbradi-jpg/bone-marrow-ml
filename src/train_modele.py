@@ -60,6 +60,28 @@ X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_
 # 8. Entraînement
 print("Entraînement du modèle en cours...")
 model_pipeline.fit(X_train, y_train)
+from sklearn.svm import SVC
+
+# --- CONFIGURATION DU 2ème MODÈLE (SVM) ---
+model_svm = Pipeline(steps=[
+    ('preprocessor', preprocessor),
+    ('classifier', SVC(probability=True, class_weight='balanced', random_state=42))
+])
+
+# Entraînement du SVM
+print("Entraînement du modèle SVM en cours...")
+model_svm.fit(X_train, y_train)
+
+# --- SAUVEGARDE DES DEUX MODÈLES ---
+# On garde 'modele_final.pkl' pour la Random Forest (votre 1er modèle)
+joblib.dump(model_pipeline, 'modele_rf.pkl') 
+
+# On crée un nouveau fichier pour le SVM
+joblib.dump(model_svm, 'modele_svm.pkl')
+
+print("\nSuccès : Deux fichiers distincts ont été générés !")
+print("- modele_rf.pkl (Random Forest)")
+print("- modele_svm.pkl (SVM)")
 
 # 9. Évaluation rapide
 print("\n--- ÉVALUATION SUR LE SET DE TEST ---")
