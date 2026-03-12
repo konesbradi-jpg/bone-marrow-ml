@@ -2,6 +2,17 @@ import streamlit as st
 import pandas as pd
 import joblib
 import os
+import numpy as np
+all_columns = [
+    'Stemcellsource', 'ABOmatch', 'RecipientABO', 'survival_time', 
+    'Recipientgender', 'Allel', 'HLAgr1', 'Diseasegroup', 'Gendermatch',
+    'CD3dkgx10d8', 'IIIV', 'CD34kgx10d6', 'Rbodymass', 'DonorCMV', 
+    'CMVstatus', 'HLAmatch', 'Disease', 'HLAmismatch', 'Antigen', 'Relapse',
+    'CD3dCD34', 'Recipientageint', 'Recipientage10', 'RecipientCMV', 
+    'PLTrecovery', 'Donorage', 'Txpostrelapse', 'Recipientage',
+    'time_to_aGvHD_III_IV', 'Riskgroup', 'ANCrecovery', 'extcGvHD', 
+    'aGvHDIIIIV', 'Donorage35', 'DonorABO', 'RecipientRh'
+]
 
 # --- 1. CONFIGURATION DE LA PAGE ---
 st.set_page_config(
@@ -105,32 +116,23 @@ with st.container():
 
 # --- 6. PRÉDICTION ---
 if st.button("Calculer la probabilité"):
-    # 1. Liste de TOUTES les colonnes attendues par le modèle
-    all_columns = [
-        'Stemcellsource', 'ABOmatch', 'RecipientABO', 'survival_time', 
-        'Recipientgender', 'Allel', 'HLAgr1', 'Diseasegroup', 'Gendermatch',
-        'CD3dkgx10d8', 'IIIV', 'CD34kgx10d6', 'Rbodymass', 'DonorCMV', 
-        'CMVstatus', 'HLAmatch', 'Disease', 'HLAmismatch', 'Antigen', 'Relapse',
-        'CD3dCD34', 'Recipientageint', 'Recipientage10', 'RecipientCMV', 
-        'PLTrecovery', 'Donorage', 'Txpostrelapse', 'Recipientage',
-        'time_to_aGvHD_III_IV', 'Riskgroup', 'ANCrecovery', 'extcGvHD', 
-        'aGvHDIIIIV', 'Donorage35', 'DonorABO', 'RecipientRh'
-    ]
+    # 1. On crée un dictionnaire avec TOUTES les colonnes
+    # On met 0 pour les chiffres et '?' pour le texte (le pipeline gérera le reste)
+    default_data = {col: '?' for col in all_columns}
+    
+    # 2. On remplace par les vraies saisies de l'utilisateur
+    default_data['Recipientage'] = age_enfant
+    default_data['Rbodymass'] = poids_actuel
+    default_data['Recipientgender'] = genre
+    default_data['Stemcellsource'] = source_cellules
+    # Ajoutez ici les autres variables de votre formulaire...
 
-    # 2. Création d'un DataFrame vide avec des valeurs par défaut ('?')
-    full_input = pd.DataFrame(columns=all_columns)
-    full_input.loc[0] = '?' 
-
-    # 3. On remplit avec les données saisies dans votre formulaire
-    # Assurez-vous que les noms correspondent à vos variables st.number_input / st.selectbox
-    full_input['Recipientage'] = age_enfant
-    full_input['Rbodymass'] = poids_actuel
-    full_input['Recipientgender'] = genre
-    full_input['Stemcellsource'] = source_cellules
-    # Ajoutez ici les autres variables si vous en avez créé d'autres
+    # 3. Conversion en DataFrame
+    full_input = pd.DataFrame([default_data])
 
     try:
-        # 4. Prédiction
+        # 4. PRÉDICTION
+        # Note : Votre pipeline (SimpleImputer) va transformer les '?' en valeurs réelles
         prediction = model.predict(full_input)
         proba = model.predict_proba(full_input)
 
@@ -140,7 +142,7 @@ if st.button("Calculer la probabilité"):
             st.error(f"Résultat : Risque élevé avec une probabilité de décès de {proba[0][0]:.2%}")
             
     except Exception as e:
-        st.error(f"Erreur lors du calcul : {e}")
+        st.error(f"Erreur technique : {e}")
 
 # --- PIED DE PAGE ---
 st.divider()
