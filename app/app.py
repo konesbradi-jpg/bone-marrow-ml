@@ -1,142 +1,100 @@
 import streamlit as st
 import pandas as pd
 import joblib
-import os
+import shap
+import matplotlib.pyplot as plt
 import numpy as np
 
-# Liste exhaustive des colonnes attendues par le pipeline
-all_columns = [
-    'Stemcellsource', 'ABOmatch', 'RecipientABO', 'survival_time', 
-    'Recipientgender', 'Alel', 'HLAgrI', 'Diseasegroup', 'Gendermatch',
-    'CD3dkgx10d8', 'IIIV', 'CD34kgx10d6', 'Rbodymass', 'DonorCMV', 
-    'CMVstatus', 'HLAmatch', 'Disease', 'HLAmismatch', 'Antigen', 'Relapse',
-    'CD3dCD34', 'Recipientageint', 'Recipientage10', 'RecipientCMV', 
-    'PLTrecovery', 'Donorage', 'Txpostrelapse', 'Recipientage',
-    'time_to_aGvHD_III_IV', 'Riskgroup', 'ANCrecovery', 'extcGvHD', 
-    'aGvHDIIIIV', 'Donorage35', 'DonorABO', 'RecipientRh'
-]
+# 1. Configuration et Chargement
+st.set_page_config(page_title="Hématologie - Aide à la décision", layout="wide")
 
-# --- 1. CONFIGURATION DE LA PAGE ---
-st.set_page_config(
-    page_title="HémoPredict | Transplantation Osseuse",
-    page_icon="🩺",
-    layout="wide"
-)
-
-# --- STYLE CSS ---
-st.markdown("""
-<style>
-.stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #007bff; color: white; }
-</style>
-""", unsafe_allow_html=True)
-
-# --- 2. CHARGEMENT DU MODÈLE ---
 @st.cache_resource
-def charger_modele():
-    # Assure-toi que ce nom correspond au fichier généré par ton script d'entraînement
-    chemin_modele = "modele_rf.pkl" 
-    if not os.path.exists(chemin_modele):
-        return None
-    try:
-        return joblib.load(chemin_modele)
-    except Exception as e:
-        st.error(f"Erreur de chargement : {e}")
-        return None
+def load_resources():
+    # On charge le meilleur modèle et les colonnes (sans survival_time désormais)
+    model = joblib.load('models/best_model.pkl')
+    features = joblib.load('models/features.pkl')
+    return model, features
 
-modele = charger_modele()
-
-# --- 3. SIDEBAR ---
-with st.sidebar:
-    st.title("💡 Aide")
-    st.info("Remplissez les informations cliniques à droite pour obtenir un pronostic de survie.")
-    st.divider()
-    st.caption("Version 1.0 - HémoPredict")
-
-# --- 4. EN-TÊTE ---
-st.title("🩺 HémoPredict : Analyse de Transplantation")
-st.subheader("Système intelligent de pronostic pédiatrique")
-st.divider()
-
-if modele is None:
-    st.error("⚠️ Fichier `modele_final.pkl` introuvable. Veuillez placer le modèle dans le dossier du projet.")
+try:
+    model, features_names = load_resources()
+except:
+    st.error("⚠️ Erreur : Modèles introuvables. Relancez train_model.py et evaluate_model.py")
     st.stop()
 
-# --- 5. FORMULAIRE (Saisie utilisateur) ---
-st.header("📋 Informations Cliniques")
+# 2. Identification dynamique des colonnes médicales
+def find_col(keyword, exclude=None):
+    for c in features_names:
+        if keyword.lower() in c.lower():
+            if exclude and exclude.lower() in c.lower(): continue
+            return c
+    return None
 
-with st.container():
-    c1, c2, c3 = st.columns(3)
+# On cherche les colonnes importantes pour les sliders
+col_age_p = find_col('age', exclude='donor') or features_names[0]
+col_age_d = find_col('donor') or features_names[1]
+col_weight = find_col('weight') or features_names[2]
 
-    with c1:
-        st.write("### 👤 Patient")
-        age = st.slider("Âge du patient (années)", 0.0, 20.0, 10.0)
-        poids = st.number_input("Poids (kg)", 2.0, 150.0, 45.0)
-        genre = st.selectbox("Genre du patient", ["F", "M"])
+# 3. Interface Utilisateur
+st.title("🏥 Prédiction de Succès de Greffe de Moelle")
+st.markdown("---")
 
-    with c2:
-        st.write("### 🧬 Greffon")
-        source_cellules = st.selectbox(
-            "Source des cellules souches",
-            ["peripheral_blood", "bone_marrow", "cord_blood"]
-        )
-        hla_match = st.select_slider(
-            "Compatibilité HLA (Antigen)",
-            options=[0, 1, 2, 3], # Selon l'encodage du dataset
-            value=0
-        )
+st.sidebar.header("📋 Saisie des données patient")
 
-    with c3:
-        st.write("### 🏥 Risques")
-        groupe_risque = st.selectbox("Groupe de Risque", ["High", "Low"])
-        cmv_status = st.selectbox("Statut CMV", [0, 1, 2, 3])
-
-# --- 6. LOGIQUE DE PRÉDICTION ---
-if st.button("Lancer l'Analyse"):
-    # 1. Créer un dictionnaire avec TOUTES les colonnes initialisées à NaN
-    # Le SimpleImputer du pipeline remplira ces valeurs manquantes automatiquement
-    entree_data = {col: np.nan for col in all_columns}
+def get_user_inputs():
+    inputs = {}
+    # On crée des sliders pour les variables critiques
+    val_age_p = st.sidebar.slider("Âge du Patient", 0, 20, 10)
+    val_age_d = st.sidebar.slider("Âge du Donneur", 18, 65, 35)
+    val_weight = st.sidebar.number_input("Poids du Patient (kg)", 5.0, 120.0, 50.0)
     
-    # 2. Remplir avec les variables saisies par l'utilisateur
-    # Attention : les noms ici doivent être EXACTEMENT ceux de 'all_columns'
-    entree_data['Recipientage'] = age
-    entree_data['Rbodymass'] = poids
-    entree_data['Recipientgender'] = genre
-    entree_data['Stemcellsource'] = source_cellules
-    entree_data['Antigen'] = hla_match
-    entree_data['Riskgroup'] = groupe_risque
-    entree_data['CMVstatus'] = cmv_status
+    # On prépare le DataFrame avec TOUTES les colonnes à 0 (valeur neutre par défaut)
+    data = {col: [0.0] for col in features_names}
+    df = pd.DataFrame(data)
+    
+    # On injecte les valeurs saisies aux bonnes colonnes
+    df[col_age_p] = float(val_age_p)
+    df[col_age_d] = float(val_age_d)
+    df[col_weight] = float(val_weight)
+    
+    return df
 
-    # 3. Conversion en DataFrame (avec l'ordre exact des colonnes)
-    full_input = pd.DataFrame([entree_data])[all_columns]
+df_input = get_user_inputs()
 
-    try:
-        # 4. Prédiction
-        prediction = modele.predict(full_input)
-        proba = modele.predict_proba(full_input)
+# 4. Prédiction et Explication SHAP
+col_left, col_right = st.columns([1, 2])
 
-        st.divider()
-        col_res1, col_res2 = st.columns(2)
+with col_left:
+    st.write("### 🩺 Diagnostic")
+    if st.button("Lancer l'Analyse"):
+        prediction = model.predict(df_input)[0]
+        probabilite = model.predict_proba(df_input)[0]
 
-        with col_res1:
-            if prediction[0] == 1:
-                st.success("### ✅ PRONOSTIC : SURVIE")
-                st.metric("Confiance", f"{proba[0][1]:.2%}")
-            else:
-                st.error("### ⚠️ PRONOSTIC : RISQUE ÉLEVÉ")
-                st.metric("Confiance", f"{proba[0][0]:.2%}")
+        if prediction == 1:
+            st.success(f"**SUCCÈS PRÉDIT** ({probabilite[1]:.1%})")
+        else:
+            st.error(f"**ÉCHEC PRÉDIT** ({probabilite[0]:.1%})")
+            
+        st.info("Cette prédiction est basée sur les données cliniques saisies et les tendances historiques.")
 
-        with col_res2:
-            # Petit graphique de probabilité
-            prob_df = pd.DataFrame({
-                'Issue': ['Décès', 'Survie'],
-                'Probabilité': proba[0]
-            })
-            st.bar_chart(prob_df.set_index('Issue'))
+with col_right:
+    st.write("### 🔍 Explication SHAP (ML Explicable)")
+    if st.button("Calculer l'impact des facteurs"):
+        # Calcul SHAP
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(df_input)
+        
+        # Gestion de la structure (RF/XGB)
+        sv = shap_values[1] if isinstance(shap_values, list) else shap_values
+        if len(sv.shape) == 3: sv = sv[:,:,1]
 
-    except Exception as e:
-        st.error(f"❌ Une erreur est survenue lors de la prédiction : {e}")
-        st.info("Astuce : Vérifiez que le pipeline de votre modèle inclut bien un 'Imputer' pour gérer les colonnes vides.")
-
-# --- PIED DE PAGE ---
-st.divider()
-st.caption("⚕️ Note : Cet outil est un prototype à but éducatif. Les décisions médicales doivent être prises par des professionnels.")
+        # Graphique SHAP Bar Plot pour ce patient
+        fig, ax = plt.subplots()
+        # On affiche l'importance locale (pour ce patient spécifique)
+        importance_locale = np.abs(sv[0])
+        indices = np.argsort(importance_locale)[-10:] # Top 10
+        
+        plt.barh(np.array(features_names)[indices], sv[0][indices], color='skyblue')
+        plt.title("Impact des caractéristiques sur cette décision")
+        plt.xlabel("Valeur SHAP (Impact)")
+        st.pyplot(fig)
+        st.caption("Les valeurs positives poussent vers le succès, négatives vers l'échec.")
