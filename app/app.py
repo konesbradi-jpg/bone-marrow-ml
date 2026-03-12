@@ -1,11 +1,16 @@
 import streamlit as st
 import pandas as pd
 import joblib
-import os
 import numpy as np
-all_columns = [
+import os
+
+# --- CONFIGURATION ---
+st.set_page_config(page_title="HémoPredict", layout="wide")
+
+# Liste des colonnes (Noms exacts du dataset .arff)
+ALL_COLUMNS = [
     'Stemcellsource', 'ABOmatch', 'RecipientABO', 'survival_time', 
-    'Recipientgender', 'Allel', 'HLAgr1', 'Diseasegroup', 'Gendermatch',
+    'Recipientgender', 'Alel', 'HLAgrI', 'Diseasegroup', 'Gendermatch',
     'CD3dkgx10d8', 'IIIV', 'CD34kgx10d6', 'Rbodymass', 'DonorCMV', 
     'CMVstatus', 'HLAmatch', 'Disease', 'HLAmismatch', 'Antigen', 'Relapse',
     'CD3dCD34', 'Recipientageint', 'Recipientage10', 'RecipientCMV', 
@@ -14,136 +19,64 @@ all_columns = [
     'aGvHDIIIIV', 'Donorage35', 'DonorABO', 'RecipientRh'
 ]
 
-# --- 1. CONFIGURATION DE LA PAGE ---
-st.set_page_config(
-    page_title="HémoPredict | Transplantation Osseuse",
-    page_icon="🩺",
-    layout="wide"
-)
-
-# --- STYLE CSS PERSONNALISÉ ---
-st.markdown("""
-<style>
-.main {
-    background-color: #f5f7f9;
-}
-.stButton>button {
-    width: 100%;
-    border-radius: 5px;
-    height: 3em;
-    background-color: #007bff;
-    color: white;
-}
-.prediction-card {
-    padding: 20px;
-    border-radius: 10px;
-    background-color: white;
-    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-}
-</style>
-""", unsafe_allow_html=True)
-
-# --- 2. CHARGEMENT DU MODÈLE ---
+# --- CHARGEMENT ---
 @st.cache_resource
-def charger_modele():
-    chemin_modele = "modele_rf.pkl"
-    if not os.path.exists(chemin_modele):
-        return None
-    try:
-        return joblib.load(chemin_modele)
-    except Exception:
-        return None
+def load_model():
+    if os.path.exists('modele_rf.pkl'):
+        return joblib.load('modele_rf.pkl')
+    return None
 
-modele = charger_modele()
+model = load_model()
 
-# --- 3. SIDEBAR ---
-with st.sidebar:
-    st.image("https://img.freepik.com/vecteurs-libre/concept-don-organes-dessine-main_23-2148943806.jpg", use_column_width=True)
-    st.title("À propos")
-    st.info("""
-    **HémoPredict** est un outil d'aide à la décision clinique utilisant l'Intelligence Artificielle
-    pour évaluer les chances de succès des greffes pédiatriques.
-    """)
-    st.divider()
-    st.caption("Projet Académique - 2026")
+# --- INTERFACE ---
+st.title("🏥 HémoPredict")
 
-# --- 4. EN-TÊTE ---
-col_header1, col_header2 = st.columns([1, 3])
+col1, col2 = st.columns(2)
+with col1:
+    age_enfant = st.number_input("Âge du receveur", 0, 25, 10)
+    genre = st.selectbox("Genre", ["Male", "Female"])
+with col2:
+    poids_actuel = st.number_input("Poids (kg)", 1.0, 150.0, 30.0)
+    type_donneur = st.selectbox("Type de donneur", ["HLA-matched", "HLA-mismatched", "Unrelated"])
+    hla_match = st.slider("Nombre de matchs HLA", 0, 10, 10)
 
-with col_header1:
-    st.image("https://cdn-icons-png.flaticon.com/512/3063/3063176.png", width=120)
-
-with col_header2:
-    st.title("HémoPredict : Analyse de Transplantation")
-    st.subheader("Système intelligent de pronostic pédiatrique")
-
-st.divider()
-
-# Vérification modèle
-if modele is None:
-    st.error("⚠️ Fichier `modele_final.pkl` introuvable. Veuillez placer le modèle dans le répertoire.")
-    st.stop()
-
-# --- 5. FORMULAIRE ---
-st.header("📋 Informations Cliniques")
-
-with st.container():
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-        st.write("### 👤 Patient")
-        age = st.slider("Âge de l'enfant (années)", 0.0, 18.0, 8.0)
-        poids = st.number_input("Poids actuel (kg)", 2.0, 100.0, 25.0)
-
-    with c2:
-        st.write("### 🧬 Greffon")
-        type_donneur = st.selectbox(
-            "Origine du donneur",
-            ["Familial", "Non-apparenté", "Sang de cordon"]
-        )
-        hla_match = st.select_slider(
-            "Compatibilité HLA",
-            options=[6, 7, 8, 9, 10],
-            value=10
-        )
-
-    with c3:
-        st.write("### 🏥 Contexte")
-        st.image(
-            "https://img.freepik.com/vecteurs-premium/concept-illustration-medicale-medecin-analysant-donnees-patients-ordinateur_18660-2135.jpg",
-            use_column_width=True
-        )
-
-# --- 6. PRÉDICTION ---
-if st.button("Calculer la probabilité"):
-    # 1. On crée un dictionnaire avec TOUTES les colonnes
-    # On met 0 pour les chiffres et '?' pour le texte (le pipeline gérera le reste)
-    default_data = {col: '?' for col in all_columns}
-    
-    # 2. On remplace par les vraies saisies de l'utilisateur
-    default_data['Recipientage'] = age_enfant
-    default_data['Rbodymass'] = poids_actuel
-    default_data['Recipientgender'] = genre
-    default_data['Stemcellsource'] = source_cellules
-    # Ajoutez ici les autres variables de votre formulaire...
-
-    # 3. Conversion en DataFrame
-    full_input = pd.DataFrame([default_data])
-
-    try:
-        # 4. PRÉDICTION
-        # Note : Votre pipeline (SimpleImputer) va transformer les '?' en valeurs réelles
-        prediction = model.predict(full_input)
-        proba = model.predict_proba(full_input)
-
-        if prediction[0] == 1:
-            st.success(f"Résultat : Survie prédite avec une probabilité de {proba[0][1]:.2%}")
-        else:
-            st.error(f"Résultat : Risque élevé avec une probabilité de décès de {proba[0][0]:.2%}")
+# --- LE BOUTON DE CALCUL (VERSION RADICALE) ---
+if st.button("🚀 CALCULER LE TAUX DE SURVIE ESTIMÉ"):
+    if model is not None:
+        # 1. Créer un dictionnaire avec toutes les colonnes d'origine (avant get_dummies)
+        # Utilisez les noms EXACTS de votre fichier CSV 'data/bone-marrow.csv'
+        donnees_brutes = {
+            "age": [age_enfant],
+            "poids": [poids_actuel],
+            "type_donneur": [type_donneur],
+            "hla_match": [hla_match],
+            "Recipientgender": [genre] # Assurez-vous que 'genre' est défini par un selectbox
+        }
+        
+        df_entree = pd.DataFrame(donnees_brutes)
+        
+        # 2. Appliquer get_dummies comme dans train_model.py
+        df_transformed = pd.get_dummies(df_entree)
+        
+        # 3. Synchroniser avec les colonnes du modèle
+        # Votre entraînement a généré une liste de colonnes spécifique
+        # On charge la liste des colonnes sauvegardées pendant l'entraînement
+        try:
+            colonnes_entrainement = joblib.load('modele_rf.pkl')
             
-    except Exception as e:
-        st.error(f"Erreur technique : {e}")
-
-# --- PIED DE PAGE ---
-st.divider()
-st.write("⚕️ *Note : Cet outil est un prototype à but éducatif et ne remplace pas un avis médical.*")
+            # Créer un DataFrame vide avec les bonnes colonnes
+            df_final = pd.DataFrame(0, index=[0], columns=colonnes_entrainement)
+            
+            # Remplir avec les valeurs transformées qui existent
+            for col in df_transformed.columns:
+                if col in df_final.columns:
+                    df_final[col] = df_transformed[col].values
+            
+            # 4. Prédiction
+            prob = modele.predict_proba(df_final)[0][1] * 100
+            
+            # Affichage des résultats (votre code actuel avec st.metric, etc.)
+            st.success(f"Probabilité de survie : {prob:.1f}%")
+            
+        except Exception as e:
+            st.error(f"Erreur de compatibilité : {e}")
