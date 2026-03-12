@@ -35,7 +35,7 @@ st.markdown("""
 # --- 2. CHARGEMENT DU MODÈLE ---
 @st.cache_resource
 def charger_modele():
-    chemin_modele = "modele_final.pkl"
+    chemin_modele = "modele_rf.pkl"
     if not os.path.exists(chemin_modele):
         return None
     try:
@@ -104,56 +104,43 @@ with st.container():
         )
 
 # --- 6. PRÉDICTION ---
-if st.button("🚀 CALCULER LE TAUX DE SURVIE ESTIMÉ"):
+if st.button("Calculer la probabilité"):
+    # 1. Liste de TOUTES les colonnes attendues par le modèle
+    all_columns = [
+        'Stemcellsource', 'ABOmatch', 'RecipientABO', 'survival_time', 
+        'Recipientgender', 'Allel', 'HLAgr1', 'Diseasegroup', 'Gendermatch',
+        'CD3dkgx10d8', 'IIIV', 'CD34kgx10d6', 'Rbodymass', 'DonorCMV', 
+        'CMVstatus', 'HLAmatch', 'Disease', 'HLAmismatch', 'Antigen', 'Relapse',
+        'CD3dCD34', 'Recipientageint', 'Recipientage10', 'RecipientCMV', 
+        'PLTrecovery', 'Donorage', 'Txpostrelapse', 'Recipientage',
+        'time_to_aGvHD_III_IV', 'Riskgroup', 'ANCrecovery', 'extcGvHD', 
+        'aGvHDIIIIV', 'Donorage35', 'DonorABO', 'RecipientRh'
+    ]
 
-    donnees = pd.DataFrame([{
-        "age": age,
-        "poids": poids,
-        "type_donneur": type_donneur,
-        "hla_match": hla_match
-    }])
+    # 2. Création d'un DataFrame vide avec des valeurs par défaut ('?')
+    full_input = pd.DataFrame(columns=all_columns)
+    full_input.loc[0] = '?' 
+
+    # 3. On remplit avec les données saisies dans votre formulaire
+    # Assurez-vous que les noms correspondent à vos variables st.number_input / st.selectbox
+    full_input['Recipientage'] = age_enfant
+    full_input['Rbodymass'] = poids_actuel
+    full_input['Recipientgender'] = genre
+    full_input['Stemcellsource'] = source_cellules
+    # Ajoutez ici les autres variables si vous en avez créé d'autres
 
     try:
-        prob = modele.predict_proba(donnees)[0][1] * 100
+        # 4. Prédiction
+        prediction = model.predict(full_input)
+        proba = model.predict_proba(full_input)
 
-        st.markdown("---")
-        st.header("🔬 Analyse des résultats")
-
-        res_col1, res_col2 = st.columns([2, 1])
-
-        with res_col1:
-
-            if prob >= 75:
-                st.balloons()
-                color = "#28a745"
-                label = "PRONOSTIC EXCELLENT"
-            elif prob >= 50:
-                color = "#ffc107"
-                label = "PRONOSTIC RÉSERVÉ"
-            else:
-                color = "#dc3545"
-                label = "PRONOSTIC CRITIQUE"
-
-            st.markdown(f"""
-            <div style="background-color:{color}; padding:20px; border-radius:10px; text-align:center;">
-                <h1 style="color:white; margin:0;">{prob:.1f}%</h1>
-                <b style="color:white;">{label}</b>
-            </div>
-            """, unsafe_allow_html=True)
-
-            st.write("")
-            st.progress(int(prob))
-
-        with res_col2:
-            st.metric(
-                label="Score de Survie",
-                value=f"{prob:.1f}%",
-                delta=f"{prob-50:.1f}% vs Moyenne"
-            )
-            st.caption("Ce score est basé sur le modèle XGBoost entraîné sur les données historiques.")
-
+        if prediction[0] == 1:
+            st.success(f"Résultat : Survie prédite avec une probabilité de {proba[0][1]:.2%}")
+        else:
+            st.error(f"Résultat : Risque élevé avec une probabilité de décès de {proba[0][0]:.2%}")
+            
     except Exception as e:
-        st.error(f"Erreur d'analyse : {e}")
+        st.error(f"Erreur lors du calcul : {e}")
 
 # --- PIED DE PAGE ---
 st.divider()
