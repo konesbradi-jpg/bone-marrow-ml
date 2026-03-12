@@ -1,85 +1,138 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 import joblib
-from scipy.io import arff
+import os  # Ajouté : nécessaire pour os.path.exists
 from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.pipeline import Pipeline # Importation directe pour plus de clarté
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder, LabelEncoder
+from sklearn.metrics import roc_auc_score, accuracy_score
+
+# Algorithmes
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
-from sklearn.metrics import classification_report, roc_auc_score
-from imblearn.over_sampling import SMOTE
-from src.data_processing import load_and_clean_data, handle_missing_values, optimize_memory
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
 
-# --- 1. CHARGEMENT ET PREPROCESSING ---
-print("Chargement des données...")
-df = load_and_clean_data('data/bone-marrow.arff')
-df = handle_missing_values(df)
-df = optimize_memory(df)
+# --- 1. FONCTION D'IMPORTATION SÉCURISÉE ---
+def charger_data(chemin_fichier):
+    if not os.path.exists(chemin_fichier):
+        raise FileNotFoundError(f"❌ Le fichier '{chemin_fichier}' n'existe pas.")
+    
+    # Lecture flexible (détecte si c'est séparé par des virgules ou points-virgules)
+    df = pd.read_csv(chemin_fichier, sep=None, engine='python')
+    print(f"✅ Données chargées : {df.shape[0]} lignes, {df.shape[1]} colonnes.")
+    return df
 
-# Séparation features / cible
-X = df.iloc[:, :-1]
-y = df.iloc[:, -1]
+# --- 2. PRÉPARATION ET PIPELINE ---
+try:
+    # --- CHARGEMENT ---
+    # Remplace par ton fichier réel (ex: 'data.csv')
+    nom_fichier = 'data_transplantation.csv' 
+    df = charger_data(nom_fichier) 
+    
+    # Séparation Features/Cible
+    target = 'survie'
+    if target not in df.columns:
+        raise ValueError(f"❌ La colonne cible '{target}' est introuvable dans le fichier.")
 
-# Encodage des colonnes texte
-for col in X.select_dtypes(include='object').columns:
-    X[col] = X[col].astype('category').cat.codes
+    X = df.drop(target, axis=1)
+    y = df[target]
 
-print(f"Dataset : {X.shape[0]} patients, {X.shape[1]} features")
-print(f"Distribution cible : {y.value_counts().to_dict()}")
+    # --- ENCODAGE DE LA CIBLE (Indispensable pour XGBoost/LightGBM) ---
+    le = LabelEncoder()
+    y = le.fit_transform(y)
+    print(f"✅ Classes détectées : {list(le.classes_)} -> Transformées en : {np.unique(y)}")
 
-# --- 2. SPLIT TRAIN/TEST ---
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, stratify=y, random_state=42
-)
+    # Identification automatique des types de colonnes
+    num_cols = X.select_dtypes(include=['int64', 'float64']).columns.tolist()
+    cat_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()
 
-# --- 3. SMOTE ---
-sm = SMOTE(random_state=42)
-X_train_res, y_train_res = sm.fit_resample(X_train, y_train)
-print(f"\nAprès SMOTE : {pd.Series(y_train_res).value_counts().to_dict()}")
+    # Split Train/Test (Stratifié pour préserver l'équilibre des classes)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
 
-# --- 4. DÉFINITION DES MODÈLES ---
-modeles = {
-    'Random Forest': Pipeline([
-        ('scaler', StandardScaler()),
-        ('model', RandomForestClassifier(n_estimators=100, random_state=42))
-    ]),
-    'SVM': Pipeline([
-        ('scaler', StandardScaler()),
-        ('model', SVC(probability=True, random_state=42))
-    ]),
-    'Gradient Boosting': Pipeline([
-        ('scaler', StandardScaler()),
-        ('model', GradientBoostingClassifier(n_estimators=100, random_state=42))
+    # --- CONSTRUCTION DU PIPELINE DE PRÉTRAITEMENT ---
+    num_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='median')),
+        ('scaler', StandardScaler())
     ])
-}
 
-# --- 5. ENTRAÎNEMENT ET ÉVALUATION ---
-print("\n--- ÉVALUATION DES MODÈLES ---")
-resultats = {}
+    cat_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='most_frequent')),
+        ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+    ])
 
-for nom, pipeline in modeles.items():
-    print(f"\nEntraînement : {nom}...")
-    pipeline.fit(X_train_res, y_train_res)
+    preprocessor = ColumnTransformer(transformers=[
+        ('num', num_transformer, num_cols),
+        ('cat', cat_transformer, cat_cols)
+    ])
+
+    # --- 3. DÉFINITION DES MODÈLES ---
+    # Note : verbosity=-1 pour LightGBM évite les logs inutiles
+    models = {
+        "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42),
+        "XGBoost": XGBClassifier(eval_metric='logloss', random_state=42),
+        "LightGBM": LGBMClassifier(random_state=42, verbosity=-1),
+        "SVM": SVC(probability=True, kernel='rbf', random_state=42)
+    }
+
+    # --- 4. ENTRAÎNEMENT ET COMPARAISON ---
+    results = []
+    best_auc = 0
+    best_model = None
+    best_model_name = ""
+
+    print("\n🚀 Entraînement des modèles en cours...")
+
+    for name, model in models.items():
+        # Pipeline complet : Prétraitement + Algorithme
+        clf = Pipeline(steps=[('preprocessor', preprocessor),
+                              ('classifier', model)])
+        
+        # Entraînement
+        clf.fit(X_train, y_train)
+        
+        # Évaluation
+        y_proba = clf.predict_proba(X_test)[:, 1]
+        y_pred = clf.predict(X_test)
+        
+        auc = roc_auc_score(y_test, y_proba)
+        acc = accuracy_score(y_test, y_pred)
+        
+        results.append({"Modèle": name, "AUC": auc, "Accuracy": acc})
+        print(f"📊 {name:15} | AUC: {auc:.4f} | Accuracy: {acc:.4f}")
+
+        # Sauvegarde du champion
+        if auc > best_auc:
+            best_auc = auc
+            best_model = clf
+            best_model_name = name
+
+    # --- 5. FINALISATION ---
+    if best_model:
+        joblib.dump(best_model, 'modele_final.pkl')
+        # Sauvegarde aussi l'encodeur de labels pour le futur
+        joblib.dump(le, 'label_encoder.pkl')
+        print(f"\n🏆 Meilleur modèle sauvegardé : {best_model_name}")
+
+    # --- 6. GRAPHIQUE DE PERFORMANCE ---
+    plt.figure(figsize=(10, 6))
+    df_res = pd.DataFrame(results).sort_values(by='AUC', ascending=False)
     
-    y_pred = pipeline.predict(X_test)
-    y_prob = pipeline.predict_proba(X_test)[:, 1]
-    auc = roc_auc_score(y_test, y_prob)
+    sns.set_theme(style="whitegrid")
+    bar = sns.barplot(x='AUC', y='Modèle', data=df_res, hue='Modèle', palette='viridis', legend=False)
     
-    print(classification_report(y_test, y_pred))
-    print(f"ROC-AUC : {auc:.3f}")
-    
-    resultats[nom] = auc
-    joblib.dump(pipeline, f"modele_{nom.lower().replace(' ', '_')}.pkl")
-    print(f"Modèle sauvegardé : modele_{nom.lower().replace(' ', '_')}.pkl")
+    plt.title('Comparaison des Modèles (HémoPredict)')
+    plt.xlim(0.0, 1.0)
+    plt.tight_layout()
+    plt.show()
 
-# --- 6. MEILLEUR MODÈLE ---
-meilleur = max(resultats, key=resultats.get)
-print(f"\n--- MEILLEUR MODÈLE : {meilleur} (AUC={resultats[meilleur]:.3f}) ---")
-
-import shutil
-shutil.copy(
-    f"modele_{meilleur.lower().replace(' ', '_')}.pkl",
-    "modele_final.pkl"
-)
-print("Meilleur modèle sauvegardé comme modele_final.pkl")
+except Exception as e:
+    print(f"❌ Une erreur est survenue : {e}")
+    import traceback
+    traceback.print_exc() # Affiche l'erreur précise pour le débogage
