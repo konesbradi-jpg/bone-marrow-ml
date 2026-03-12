@@ -35,7 +35,7 @@ st.markdown("""
 # --- 2. CHARGEMENT DU MODÈLE ---
 @st.cache_resource
 def charger_modele():
-    chemin_modele = "modele_final.pkl"
+    chemin_modele = os.path.join(os.path.dirname(__file__), "..", "modele_final.pkl")
     if not os.path.exists(chemin_modele):
         return None
     try:
