@@ -1,149 +1,100 @@
 import streamlit as st
 import pandas as pd
 import joblib
-import os
+import shap
+import matplotlib.pyplot as plt
 import numpy as np
-all_columns = [
-    'Stemcellsource', 'ABOmatch', 'RecipientABO', 'survival_time', 
-    'Recipientgender', 'Allel', 'HLAgr1', 'Diseasegroup', 'Gendermatch',
-    'CD3dkgx10d8', 'IIIV', 'CD34kgx10d6', 'Rbodymass', 'DonorCMV', 
-    'CMVstatus', 'HLAmatch', 'Disease', 'HLAmismatch', 'Antigen', 'Relapse',
-    'CD3dCD34', 'Recipientageint', 'Recipientage10', 'RecipientCMV', 
-    'PLTrecovery', 'Donorage', 'Txpostrelapse', 'Recipientage',
-    'time_to_aGvHD_III_IV', 'Riskgroup', 'ANCrecovery', 'extcGvHD', 
-    'aGvHDIIIIV', 'Donorage35', 'DonorABO', 'RecipientRh'
-]
 
-# --- 1. CONFIGURATION DE LA PAGE ---
-st.set_page_config(
-    page_title="HémoPredict | Transplantation Osseuse",
-    page_icon="🩺",
-    layout="wide"
-)
+# 1. Configuration et Chargement
+st.set_page_config(page_title="Hématologie - Aide à la décision", layout="wide")
 
-# --- STYLE CSS PERSONNALISÉ ---
-st.markdown("""
-<style>
-.main {
-    background-color: #f5f7f9;
-}
-.stButton>button {
-    width: 100%;
-    border-radius: 5px;
-    height: 3em;
-    background-color: #007bff;
-    color: white;
-}
-.prediction-card {
-    padding: 20px;
-    border-radius: 10px;
-    background-color: white;
-    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-}
-</style>
-""", unsafe_allow_html=True)
-
-# --- 2. CHARGEMENT DU MODÈLE ---
 @st.cache_resource
-def charger_modele():
-    chemin_modele = os.path.join(os.path.dirname(__file__), "..", "modele_final.pkl")
-    if not os.path.exists(chemin_modele):
-        return None
-    try:
-        return joblib.load(chemin_modele)
-    except Exception:
-        return None
+def load_resources():
+    # On charge le meilleur modèle et les colonnes (sans survival_time désormais)
+    model = joblib.load('models/best_model.pkl')
+    features = joblib.load('models/features.pkl')
+    return model, features
 
-modele = charger_modele()
-
-# --- 3. SIDEBAR ---
-with st.sidebar:
-    st.image("https://img.freepik.com/vecteurs-libre/concept-don-organes-dessine-main_23-2148943806.jpg", use_column_width=True)
-    st.title("À propos")
-    st.info("""
-    **HémoPredict** est un outil d'aide à la décision clinique utilisant l'Intelligence Artificielle
-    pour évaluer les chances de succès des greffes pédiatriques.
-    """)
-    st.divider()
-    st.caption("Projet Académique - 2026")
-
-# --- 4. EN-TÊTE ---
-col_header1, col_header2 = st.columns([1, 3])
-
-with col_header1:
-    st.image("https://cdn-icons-png.flaticon.com/512/3063/3063176.png", width=120)
-
-with col_header2:
-    st.title("HémoPredict : Analyse de Transplantation")
-    st.subheader("Système intelligent de pronostic pédiatrique")
-
-st.divider()
-
-# Vérification modèle
-if modele is None:
-    st.error("⚠️ Fichier `modele_final.pkl` introuvable. Veuillez placer le modèle dans le répertoire.")
+try:
+    model, features_names = load_resources()
+except:
+    st.error("⚠️ Erreur : Modèles introuvables. Relancez train_model.py et evaluate_model.py")
     st.stop()
 
-# --- 5. FORMULAIRE ---
-st.header("📋 Informations Cliniques")
+# 2. Identification dynamique des colonnes médicales
+def find_col(keyword, exclude=None):
+    for c in features_names:
+        if keyword.lower() in c.lower():
+            if exclude and exclude.lower() in c.lower(): continue
+            return c
+    return None
 
-with st.container():
-    c1, c2, c3 = st.columns(3)
+# On cherche les colonnes importantes pour les sliders
+col_age_p = find_col('age', exclude='donor') or features_names[0]
+col_age_d = find_col('donor') or features_names[1]
+col_weight = find_col('weight') or features_names[2]
 
-    with c1:
-        st.write("### 👤 Patient")
-        age = st.slider("Âge de l'enfant (années)", 0.0, 18.0, 8.0)
-        poids = st.number_input("Poids actuel (kg)", 2.0, 100.0, 25.0)
+# 3. Interface Utilisateur
+st.title("🏥 Prédiction de Succès de Greffe de Moelle")
+st.markdown("---")
 
-    with c2:
-        st.write("### 🧬 Greffon")
-        type_donneur = st.selectbox(
-            "Origine du donneur",
-            ["Familial", "Non-apparenté", "Sang de cordon"]
-        )
-        hla_match = st.select_slider(
-            "Compatibilité HLA",
-            options=[6, 7, 8, 9, 10],
-            value=10
-        )
+st.sidebar.header("📋 Saisie des données patient")
 
-    with c3:
-        st.write("### 🏥 Contexte")
-        st.image(
-            "https://img.freepik.com/vecteurs-premium/concept-illustration-medicale-medecin-analysant-donnees-patients-ordinateur_18660-2135.jpg",
-            use_column_width=True
-        )
-
-# --- 6. PRÉDICTION ---
-if st.button("Calculer la probabilité"):
-    # 1. On crée un dictionnaire avec TOUTES les colonnes
-    # On met 0 pour les chiffres et '?' pour le texte (le pipeline gérera le reste)
-    default_data = {col: '?' for col in all_columns}
+def get_user_inputs():
+    inputs = {}
+    # On crée des sliders pour les variables critiques
+    val_age_p = st.sidebar.slider("Âge du Patient", 0, 20, 10)
+    val_age_d = st.sidebar.slider("Âge du Donneur", 18, 65, 35)
+    val_weight = st.sidebar.number_input("Poids du Patient (kg)", 5.0, 120.0, 50.0)
     
-    # 2. On remplace par les vraies saisies de l'utilisateur
-    default_data['Recipientage'] = age_enfant
-    default_data['Rbodymass'] = poids_actuel
-    default_data['Recipientgender'] = genre
-    default_data['Stemcellsource'] = source_cellules
-    # Ajoutez ici les autres variables de votre formulaire...
+    # On prépare le DataFrame avec TOUTES les colonnes à 0 (valeur neutre par défaut)
+    data = {col: [0.0] for col in features_names}
+    df = pd.DataFrame(data)
+    
+    # On injecte les valeurs saisies aux bonnes colonnes
+    df[col_age_p] = float(val_age_p)
+    df[col_age_d] = float(val_age_d)
+    df[col_weight] = float(val_weight)
+    
+    return df
 
-    # 3. Conversion en DataFrame
-    full_input = pd.DataFrame([default_data])
+df_input = get_user_inputs()
 
-    try:
-        # 4. PRÉDICTION
-        # Note : Votre pipeline (SimpleImputer) va transformer les '?' en valeurs réelles
-        prediction = model.predict(full_input)
-        proba = model.predict_proba(full_input)
+# 4. Prédiction et Explication SHAP
+col_left, col_right = st.columns([1, 2])
 
-        if prediction[0] == 1:
-            st.success(f"Résultat : Survie prédite avec une probabilité de {proba[0][1]:.2%}")
+with col_left:
+    st.write("### 🩺 Diagnostic")
+    if st.button("Lancer l'Analyse"):
+        prediction = model.predict(df_input)[0]
+        probabilite = model.predict_proba(df_input)[0]
+
+        if prediction == 1:
+            st.success(f"**SUCCÈS PRÉDIT** ({probabilite[1]:.1%})")
         else:
-            st.error(f"Résultat : Risque élevé avec une probabilité de décès de {proba[0][0]:.2%}")
+            st.error(f"**ÉCHEC PRÉDIT** ({probabilite[0]:.1%})")
             
-    except Exception as e:
-        st.error(f"Erreur technique : {e}")
+        st.info("Cette prédiction est basée sur les données cliniques saisies et les tendances historiques.")
 
-# --- PIED DE PAGE ---
-st.divider()
-st.write("⚕️ *Note : Cet outil est un prototype à but éducatif et ne remplace pas un avis médical.*")
+with col_right:
+    st.write("### 🔍 Explication SHAP (ML Explicable)")
+    if st.button("Calculer l'impact des facteurs"):
+        # Calcul SHAP
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(df_input)
+        
+        # Gestion de la structure (RF/XGB)
+        sv = shap_values[1] if isinstance(shap_values, list) else shap_values
+        if len(sv.shape) == 3: sv = sv[:,:,1]
+
+        # Graphique SHAP Bar Plot pour ce patient
+        fig, ax = plt.subplots()
+        # On affiche l'importance locale (pour ce patient spécifique)
+        importance_locale = np.abs(sv[0])
+        indices = np.argsort(importance_locale)[-10:] # Top 10
+        
+        plt.barh(np.array(features_names)[indices], sv[0][indices], color='skyblue')
+        plt.title("Impact des caractéristiques sur cette décision")
+        plt.xlabel("Valeur SHAP (Impact)")
+        st.pyplot(fig)
+        st.caption("Les valeurs positives poussent vers le succès, négatives vers l'échec.")
