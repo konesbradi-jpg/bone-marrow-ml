@@ -17,7 +17,7 @@ def run_training():
     if not os.path.exists('models'): os.makedirs('models')
     
     print("\n" + "="*50)
-    print("--- [1/5] CHARGEMENT ET NETTOYAGE ---")
+    print("--- [1/6] CHARGEMENT ET NETTOYAGE ---") # Étape ajoutée
     file_path = 'data/bone-marrow.arff'
     
     if not os.path.exists(file_path):
@@ -28,11 +28,20 @@ def run_training():
     df = load_and_clean_data(file_path)
     df = handle_missing_values(df)
     
-    print("--- [2/5] OPTIMISATION MÉMOIRE ---")
+    print("--- [2/6] OPTIMISATION MÉMOIRE ---") # Étape ajoutée
     df = optimize_memory(df)
 
     # 2. Préparation Features / Target
     target = 'survival_status'
+    
+    # --- CORRECTION ICI : SUPPRESSION DE 'survival_time' ---
+    # Cette colonne cause du "data leakage" car elle n'est pas connue au moment de la décision
+    if 'survival_time' in df.columns:
+        df = df.drop('survival_time', axis=1)
+        print("[OK] 'survival_time' a été supprimée pour éviter le data leakage.")
+    else:
+        print("[INFO] 'survival_time' n'a pas été trouvée ou déjà supprimée.")
+        
     le = LabelEncoder()
     df[target] = le.fit_transform(df[target].astype(str))
 
@@ -47,7 +56,7 @@ def run_training():
         X, y, test_size=0.2, random_state=42, stratify=y
     )
     
-    print("--- [3/5] ÉQUILIBRAGE DES CLASSES (SMOTE) ---")
+    print("--- [3/6] ÉQUILIBRAGE DES CLASSES (SMOTE) ---") # Étape ajoutée
     smote = SMOTE(random_state=42)
     X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
 
@@ -57,7 +66,7 @@ def run_training():
     joblib.dump(X.columns.tolist(), 'models/features.pkl')
 
     # 4. Entraînement des 4 modèles
-    print("--- [4/5] ENTRAÎNEMENT DES 4 MODÈLES ---")
+    print("--- [4/6] ENTRAÎNEMENT DES 4 MODÈLES ---") # Étape ajoutée
     
     models = {
         "random_forest": RandomForestClassifier(n_estimators=100, random_state=42),
@@ -72,7 +81,7 @@ def run_training():
         # Sauvegarde individuelle dans le dossier models/
         joblib.dump(model, f'models/{name}.pkl')
 
-    print("--- [5/5] TERMINÉ ! ---")
+    print("--- [5/6] TERMINÉ ! ---") # Étape ajoutée
     print("Tous les modèles sont sauvegardés dans le dossier 'models/'.")
     print("="*50 + "\n")
 
