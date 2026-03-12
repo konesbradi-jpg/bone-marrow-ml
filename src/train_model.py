@@ -1,89 +1,88 @@
+import pandas as pd
 import os
 import joblib
-import pandas as pd
-from sklearn.model_selection import train_test_split
+import numpy as np
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.svm import SVC
 from xgboost import XGBClassifier
-from lightgbm import LGBMClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
 from imblearn.over_sampling import SMOTE
-from sklearn.preprocessing import LabelEncoder
 
-# Import de tes fonctions depuis data_processing.py
-from data_processing import load_and_clean_data, optimize_memory, handle_missing_values
+# 1. Liste des colonnes de "Fuite de données" à supprimer impérativement
+# Ces colonnes donnent la réponse au modèle avant qu'il ne réfléchisse
+COLS_TO_DROP = ['survival_time', 'time_to_aGvHD_III_IV', 'PLTrecovery', 'ANCrecovery']
 
-def run_training():
-    # 1. Préparation des dossiers
-    if not os.path.exists('models'): os.makedirs('models')
-    
-    print("\n" + "="*50)
-    print("--- [1/6] CHARGEMENT ET NETTOYAGE ---") # Étape ajoutée
-    file_path = 'data/bone-marrow.arff'
-    
-    if not os.path.exists(file_path):
-        print(f"ERREUR : Le fichier {file_path} est introuvable.")
+def train_and_save_models():
+    if not os.path.exists('models'):
+        os.makedirs('models')
+
+    print("[1/5] Chargement des données...")
+    try:
+        # Remplacez par le nom exact de votre fichier
+        df = pd.read_csv('data/bone-marrow.csv') 
+    except FileNotFoundError:
+        print("Erreur : Fichier CSV introuvable dans 'data/'")
         return
 
-    # Utilisation de tes fonctions
-    df = load_and_clean_data(file_path)
-    df = handle_missing_values(df)
+    # --- ÉTAPE CRUCIALE : NETTOYAGE ---
+    # Remplacer 'target' par le nom réel de votre colonne cible (ex: 'survival_status')
+    TARGET_COL = 'survival_status' 
     
-    print("--- [2/6] OPTIMISATION MÉMOIRE ---") # Étape ajoutée
-    df = optimize_memory(df)
+    if TARGET_COL not in df.columns:
+        # Si vous n'avez pas renommé votre colonne cible, on essaie de la deviner
+        # Souvent c'est la dernière colonne ou une colonne binaire
+        print(f"Attention: {TARGET_COL} non trouvé. Vérifiez le nom de la colonne cible.")
+        return
 
-    # 2. Préparation Features / Target
-    target = 'survival_status'
+    # Suppression des fuites de données
+    existing_drops = [c for c in COLS_TO_DROP if c in df.columns]
+    df = df.drop(columns=existing_drops)
+
+    # Gestion des valeurs manquantes (médiane pour le numérique)
+    df = df.replace('?', np.nan) # Si le dataset contient des '?'
+    for col in df.columns:
+        if df[col].dtype == 'object':
+            df[col] = df[col].fillna(df[col].mode()[0])
+        else:
+            df[col] = df[col].fillna(df[col].median())
+
+    # --- ÉTAPE CRUCIALE : ENCODAGE ---
+    # On transforme les catégories en chiffres
+    X = df.drop(TARGET_COL, axis=1)
+    y = df[TARGET_COL].astype(int)
+
+    # On utilise get_dummies mais on sauvegarde l'ordre des colonnes !
+    X = pd.get_dummies(X)
     
-    # --- CORRECTION ICI : SUPPRESSION DE 'survival_time' ---
-    # Cette colonne cause du "data leakage" car elle n'est pas connue au moment de la décision
-    if 'survival_time' in df.columns:
-        df = df.drop('survival_time', axis=1)
-        print("[OK] 'survival_time' a été supprimée pour éviter le data leakage.")
-    else:
-        print("[INFO] 'survival_time' n'a pas été trouvée ou déjà supprimée.")
-        
-    le = LabelEncoder()
-    df[target] = le.fit_transform(df[target].astype(str))
+    # On sauvegarde la liste EXACTE des colonnes pour Streamlit
+    model_features = X.columns.tolist()
+    joblib.dump(model_features, 'models/features.pkl')
 
-    X = df.drop(target, axis=1)
-    y = df[target]
-
-    # Encodage des variables catégorielles (Dummies)
-    X = pd.get_dummies(X, drop_first=True)
-
-    # 3. Division du dataset (Stratify pour garder l'équilibre des classes)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
+    # 4. Division et SMOTE
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
     
-    print("--- [3/6] ÉQUILIBRAGE DES CLASSES (SMOTE) ---") # Étape ajoutée
+    print("[2/5] Application de SMOTE...")
     smote = SMOTE(random_state=42)
     X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
 
-    # Sauvegarde des données de test et des noms de colonnes
-    X_test.to_csv('data/X_test.csv', index=False)
-    y_test.to_csv('data/y_test.csv', index=False)
-    joblib.dump(X.columns.tolist(), 'models/features.pkl')
-
-    # 4. Entraînement des 4 modèles
-    print("--- [4/6] ENTRAÎNEMENT DES 4 MODÈLES ---") # Étape ajoutée
-    
+    # 5. Entraînement
     models = {
-        "random_forest": RandomForestClassifier(n_estimators=100, random_state=42),
-        "xgboost": XGBClassifier(random_state=42, use_label_encoder=False, eval_metric='logloss'),
-        "svm": SVC(probability=True, random_state=42),
-        "lightgbm": LGBMClassifier(random_state=42)
+        "random_forest": RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42),
+        "xgboost": XGBClassifier(random_state=42),
+        "best_model": RandomForestClassifier(n_estimators=200, random_state=42) # Modèle par défaut pour l'interface
     }
 
+    print("[3/5] Entraînement et validation...")
     for name, model in models.items():
-        print(f"Entraînement de : {name}...")
         model.fit(X_train_res, y_train_res)
-        # Sauvegarde individuelle dans le dossier models/
+        y_pred = model.predict(X_test)
+        
+        print(f"\n--- Rapport pour {name} ---")
+        print(classification_report(y_test, y_pred))
+        
         joblib.dump(model, f'models/{name}.pkl')
-
-    print("--- [5/6] TERMINÉ ! ---") # Étape ajoutée
-    print("Tous les modèles sont sauvegardés dans le dossier 'models/'.")
-    print("="*50 + "\n")
+    
+    print("\n[4/5] Succès ! Modèles et liste des features sauvegardés.")
 
 if __name__ == "__main__":
-    run_training()
+    train_and_save_models()
