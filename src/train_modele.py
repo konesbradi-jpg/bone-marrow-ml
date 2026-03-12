@@ -1,101 +1,85 @@
 import pandas as pd
 import numpy as np
 import joblib
+from scipy.io import arff
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.svm import SVC
-from xgboost import XGBClassifier
-from sklearn.metrics import accuracy_score, roc_auc_score, classification_report
+from sklearn.metrics import classification_report, roc_auc_score
+from imblearn.over_sampling import SMOTE
+from src.data_processing import load_and_clean_data, handle_missing_values, optimize_memory
 
-# --- 1. CHARGEMENT DES DONNÉES ---
-try:
-    # Remplace par le nom exact de ton fichier CSV
-    df = pd.read_csv('data_transplantation.csv')
-    print("Données chargées avec succès.")
-except FileNotFoundError:
-    print(" Erreur : Le fichier CSV est introuvable.")
-    exit()
+# --- 1. CHARGEMENT ET PREPROCESSING ---
+print("Chargement des données...")
+df = load_and_clean_data('data/bone-marrow.arff')
+df = handle_missing_values(df)
+df = optimize_memory(df)
 
-# Séparation des variables explicatives (X) et de la cible (y)
-# On suppose que la colonne à prédire s'appelle 'survie' (0 = décès, 1 = survie)
-X = df.drop('survie', axis=1)
-y = df['survie']
+# Séparation features / cible
+X = df.iloc[:, :-1]
+y = df.iloc[:, -1]
 
-# Séparation en jeu d'entraînement (80%) et de test (20%)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+# Encodage des colonnes texte
+for col in X.select_dtypes(include='object').columns:
+    X[col] = X[col].astype('category').cat.codes
 
-# --- 2. PRÉTRAITEMENT ROBUSTE (PIPELINE) ---
-# Identification des colonnes numériques et catégorielles
-colonnes_numeriques = ['age', 'poids', 'hla_match']
-colonnes_categorieles = ['type_donneur'] # Ajoute d'autres colonnes texte ici si besoin
+print(f"Dataset : {X.shape[0]} patients, {X.shape[1]} features")
+print(f"Distribution cible : {y.value_counts().to_dict()}")
 
-# Création des transformateurs
-transformateur_numerique = StandardScaler() # Met les valeurs sur la même échelle (Crucial pour le SVM)
-transformateur_categoriel = OneHotEncoder(handle_unknown='ignore') # Transforme le texte en colonnes de 0 et 1
+# --- 2. SPLIT TRAIN/TEST ---
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
 
-# Assemblage du prétraitement
-preprocesseur = ColumnTransformer(
-    transformers=[
-        ('num', transformateur_numerique, colonnes_numeriques),
-        ('cat', transformateur_categoriel, colonnes_categorieles)
-    ])
+# --- 3. SMOTE ---
+sm = SMOTE(random_state=42)
+X_train_res, y_train_res = sm.fit_resample(X_train, y_train)
+print(f"\nAprès SMOTE : {pd.Series(y_train_res).value_counts().to_dict()}")
 
-# --- 3. DÉFINITION DES MODÈLES ---
-# On configure les 3 modèles avec des paramètres de base solides
+# --- 4. DÉFINITION DES MODÈLES ---
 modeles = {
-    "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42),
-    
-    # probability=True est OBLIGATOIRE pour le SVM, sinon la fonction predict_proba() de ton app Streamlit plantera
-    "SVM": SVC(kernel='rbf', probability=True, random_state=42), 
-    
-    "XGBoost": XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
+    'Random Forest': Pipeline([
+        ('scaler', StandardScaler()),
+        ('model', RandomForestClassifier(n_estimators=100, random_state=42))
+    ]),
+    'SVM': Pipeline([
+        ('scaler', StandardScaler()),
+        ('model', SVC(probability=True, random_state=42))
+    ]),
+    'Gradient Boosting': Pipeline([
+        ('scaler', StandardScaler()),
+        ('model', GradientBoostingClassifier(n_estimators=100, random_state=42))
+    ])
 }
 
-# --- 4. ENTRAÎNEMENT ET ÉVALUATION ---
-print("\n🚀 Début de l'entraînement et de l'évaluation des modèles...\n")
-
+# --- 5. ENTRAÎNEMENT ET ÉVALUATION ---
+print("\n--- ÉVALUATION DES MODÈLES ---")
 resultats = {}
-meilleur_modele = None
-meilleur_score = 0
-nom_meilleur_modele = ""
 
-for nom, modele in modeles.items():
-    # Création du pipeline complet : Prétraitement -> Modèle
-    pipeline = Pipeline(steps=[('preprocessor', preprocesseur),
-                               ('classifier', modele)])
+for nom, pipeline in modeles.items():
+    print(f"\nEntraînement : {nom}...")
+    pipeline.fit(X_train_res, y_train_res)
     
-    # Entraînement
-    pipeline.fit(X_train, y_train)
-    
-    # Prédictions sur le jeu de test
     y_pred = pipeline.predict(X_test)
-    y_proba = pipeline.predict_proba(X_test)[:, 1] # Probabilité de la classe 1 (survie)
+    y_prob = pipeline.predict_proba(X_test)[:, 1]
+    auc = roc_auc_score(y_test, y_prob)
     
-    # Calcul des métriques
-    acc = accuracy_score(y_test, y_pred)
-    roc = roc_auc_score(y_test, y_proba)
+    print(classification_report(y_test, y_pred))
+    print(f"ROC-AUC : {auc:.3f}")
     
-    resultats[nom] = {'Accuracy': acc, 'ROC-AUC': roc, 'Pipeline': pipeline}
-    
-    print(f"--- {nom} ---")
-    print(f"Précision Globale (Accuracy) : {acc:.4f}")
-    print(f"Score ROC-AUC              : {roc:.4f}")
-    print("-" * 30)
-    
-    # On choisit le meilleur modèle basé sur le score ROC-AUC (plus pertinent pour les données médicales)
-    if roc > meilleur_score:
-        meilleur_score = roc
-        meilleur_modele = pipeline
-        nom_meilleur_modele = nom
+    resultats[nom] = auc
+    joblib.dump(pipeline, f"modele_{nom.lower().replace(' ', '_')}.pkl")
+    print(f"Modèle sauvegardé : modele_{nom.lower().replace(' ', '_')}.pkl")
 
-# --- 5. SAUVEGARDE DU MEILLEUR MODÈLE ---
-print(f"\n🏆 Le meilleur modèle est {nom_meilleur_modele} avec un score ROC-AUC de {meilleur_score:.4f}.")
-print("💾 Sauvegarde en cours...")
+# --- 6. MEILLEUR MODÈLE ---
+meilleur = max(resultats, key=resultats.get)
+print(f"\n--- MEILLEUR MODÈLE : {meilleur} (AUC={resultats[meilleur]:.3f}) ---")
 
-# On sauvegarde le pipeline complet (qui inclut le modèle ET le nettoyeur de données)
-joblib.dump(meilleur_modele, 'modele_final.pkl')
-
-print("Modèle sauvegardé sous 'modele_final.pkl'. Il est prêt pour l'application Streamlit !")
+import shutil
+shutil.copy(
+    f"modele_{meilleur.lower().replace(' ', '_')}.pkl",
+    "modele_final.pkl"
+)
+print("Meilleur modèle sauvegardé comme modele_final.pkl")
