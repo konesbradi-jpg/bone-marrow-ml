@@ -7,7 +7,7 @@ This project aims to build a machine learning system that predicts the success o
 The goal is to support physicians in medical decision-making by providing predictive insights and interpretable explanations.
 
 The system includes:
-- Data preprocessing
+- Data preprocessing 
 - Exploratory Data Analysis
 - Machine learning model training
 - Model evaluation
