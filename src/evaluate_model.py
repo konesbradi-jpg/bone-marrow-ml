@@ -1,114 +1,118 @@
 import pandas as pd
-import numpy as np
 import joblib
 import matplotlib.pyplot as plt
 import seaborn as sns
+import shap
+import numpy as np
 import os
-from sklearn.metrics import (
-    classification_report, confusion_matrix, roc_curve, 
-    auc, precision_recall_curve, average_precision_score, f1_score
-)
-# Import personnalisé (assure-toi que le chemin est correct)
-from src.data_processing import load_and_clean_data
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, roc_curve
 
-def evaluate_medical_model(model, X, y, model_name="Modèle"):
-    """
-    Fonction robuste d'évaluation de performance avec métriques médicales.
-    """
-    # 1. Prédictions
-    y_pred = model.predict(X)
-    y_prob = model.predict_proba(X)[:, 1] if hasattr(model, "predict_proba") else None
+def run_evaluation():
+    print("\n" + "="*70)
+    print("--- DÉMARRAGE DE L'ÉVALUATION COMPARATIVE ---")
+    print("="*70)
 
-    # 2. Calcul des métriques de haut niveau
-    roc_auc = auc(*roc_curve(y, y_prob)[:2]) if y_prob is not None else 0
-    avg_precision = average_precision_score(y, y_prob) if y_prob is not None else 0
-    
-    print(f"\n" + "="*40)
-    print(f"RAPPORT D'ÉVALUATION : {model_name}")
-    print("="*40)
-    print(classification_report(y, y_pred, target_names=['Décès (0)', 'Survie (1)']))
-    print(f" Score AUC-ROC : {roc_auc:.4f}")
-    print(f" Average Precision : {avg_precision:.4f}")
-
-    # 3. VISUALISATION
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-
-    # --- A. Matrice de Confusion (Normalisée pour voir les % d'erreurs) ---
-    cm = confusion_matrix(y, y_pred)
-    cm_norm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-    sns.heatmap(cm_norm, annot=True, fmt='.2%', cmap='Blues', ax=axes[0], cbar=False)
-    axes[0].set_title('Matrice de Confusion (Rappel %)')
-    axes[0].set_xlabel('Prédictions')
-    axes[0].set_ylabel('Réalité')
-
-    # --- B. Courbe ROC ---
-    if y_prob is not None:
-        fpr, tpr, _ = roc_curve(y, y_prob)
-        axes[1].plot(fpr, tpr, color='darkorange', lw=2, label=f'AUC = {roc_auc:.3f}')
-        axes[1].plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-        axes[1].set_title('Courbe ROC (Sensibilité vs Spécificité)')
-        axes[1].legend(loc="lower right")
-
-    # --- C. Importance des variables (Si disponible) ---
-    # Très utile pour le Gradient Boosting (modele_gb.pkl)
+    # 1. Chargement des données de test
     try:
-        # On essaie de récupérer l'importance des variables du classifieur à l'intérieur du pipeline
-        if hasattr(model, 'named_steps'):
-            clf = model.named_steps['classifier']
-            # On récupère les noms de colonnes après transformation si possible
-            # Ici on simplifie en prenant les colonnes de X
-            importances = pd.Series(clf.feature_importances_, index=X.columns)
-        else:
-            importances = pd.Series(model.feature_importances_, index=X.columns)
+        X_test = pd.read_csv('data/X_test.csv')
+        y_test = pd.read_csv('data/y_test.csv').values.ravel() # Assurer le format 1D
+        print("[OK] Données de test chargées.")
+    except FileNotFoundError:
+        print("[ERREUR] Fichiers de test introuvables. Lancez train_model.py d'abord.")
+        return
+
+    # 2. Liste des modèles à tester
+    model_names = ["random_forest", "xgboost", "svm", "lightgbm"]
+    results = []
+    trained_models = {}
+
+    print(f"\n{'Modèle':<15} | {'Acc':<6} | {'Prec':<6} | {'Rec':<6} | {'F1':<6} | {'AUC':<6}")
+    print("-" * 70)
+
+    for name in model_names:
+        path = f'models/{name}.pkl'
+        if os.path.exists(path):
+            model = joblib.load(path)
+            trained_models[name] = model
             
-        importances.nlargest(10).sort_values().plot(kind='barh', ax=axes[2], color='teal')
-        axes[2].set_title('Top 10 des facteurs de survie')
-    except:
-        axes[2].text(0.5, 0.5, "Importance non disponible\npour ce modèle", ha='center')
+            # Prédictions
+            y_pred = model.predict(X_test)
+            
+            # Probabilités pour l'AUC
+            if hasattr(model, "predict_proba"):
+                y_prob = model.predict_proba(X_test)[:, 1]
+            else:
+                y_prob = model.decision_function(X_test)
 
-    plt.tight_layout()
-    plt.show()
+            # Calcul des métriques
+            metrics = {
+                "Modèle": name,
+                "Accuracy": accuracy_score(y_test, y_pred),
+                "Precision": precision_score(y_test, y_pred),
+                "Recall": recall_score(y_test, y_pred),
+                "F1": f1_score(y_test, y_pred),
+                "ROC-AUC": roc_auc_score(y_test, y_prob)
+            }
+            results.append(metrics)
 
-def run_evaluation(data_path, model_path):
-    print("Initialisation de l'évaluation...")
+            print(f"{name:<15} | {metrics['Accuracy']:.3f} | {metrics['Precision']:.3f} | "
+                  f"{metrics['Recall']:.3f} | {metrics['F1']:.3f} | {metrics['ROC-AUC']:.3f}")
+
+    # 3. Choisir le meilleur modèle (Basé sur le ROC-AUC)
+    df_results = pd.DataFrame(results)
+    best_model_name = df_results.sort_values(by="ROC-AUC", ascending=False).iloc[0]["Modèle"]
+    best_model = trained_models[best_model_name]
     
-    # 1. Chargement des données
-    if not os.path.exists(data_path):
-        print(f" Erreur : Fichier de données introuvable : {data_path}")
-        return
+    print("\n" + "="*70)
+    print(f"🏆 LE MEILLEUR MODÈLE EST : {best_model_name.upper()}")
+    print("="*70)
 
-    try:
-        df = load_and_clean_data(data_path)
-    except Exception as e:
-        print(f" Erreur lors du nettoyage : {e}")
-        return
+    # Sauvegarder le meilleur modèle pour l'interface Streamlit
+    joblib.dump(best_model, 'models/best_model.pkl')
+    print(f"[OK] Meilleur modèle sauvegardé sous : models/best_model.pkl")
 
-    # 2. Séparation Features/Cible
-    # Utilisation d'une détection plus robuste du nom de la cible
-    possible_targets = ['survie', 'survival', 'class', 'target']
-    target_col = next((c for c in df.columns if c.lower() in possible_targets), df.columns[-1])
+    # 4. Analyse SHAP pour le MEILLEUR MODÈLE
+    print(f"\n--- ANALYSE SHAP POUR {best_model_name.upper()} ---")
     
-    X = df.drop(columns=[target_col])
-    y = df[target_col]
-
-    # 3. Chargement du modèle
-    if not os.path.exists(model_path):
-        print(f"❌ Erreur : Le fichier modèle '{model_path}' n'existe pas.")
-        return
-
+    # Utilisation d'un explainer générique pour plus de stabilité
     try:
-        model = joblib.load(model_path)
-        print(f"✅ Modèle '{model_path}' chargé.")
-    except Exception as e:
-        print(f"❌ Erreur technique lors du chargement : {e}")
-        return
+        if best_model_name == "svm":
+            # SVM nécessite un explainer spécifique ou un échantillon plus petit
+            explainer = shap.KernelExplainer(best_model.predict, shap.sample(X_test, 10))
+            sv = explainer.shap_values(X_test)
+        else:
+            # Pour les modèles à base d'arbres (RF, XGB, LGBM)
+            explainer = shap.TreeExplainer(best_model)
+            sv = explainer.shap_values(X_test)
 
-    # 4. Lancement de l'évaluation médicale
-    evaluate_medical_model(model, X, y, model_name=os.path.basename(model_path))
+        # Gestion de la structure SHAP (classe 1)
+        if isinstance(sv, list):
+            sv = sv[1]
+        elif len(sv.shape) == 3:
+            sv = sv[:, :, 1]
+
+        # Graphique Importance
+        plt.figure(figsize=(10, 6))
+        shap.summary_plot(sv, X_test, plot_type="bar", show=False)
+        plt.title(f"Importance des variables - {best_model_name}")
+        plt.tight_layout()
+        plt.savefig("shap_importance.png")
+        
+        # Top 10 console
+        importance_df = pd.DataFrame({
+            'Feature': X_test.columns,
+            'Importance': np.abs(sv).mean(axis=0)
+        }).sort_values(by='Importance', ascending=False)
+
+        print("\n--- TOP 10 FEATURES (FACTEURS MÉDICAUX CLÉS) ---")
+        print(importance_df.head(10).to_string(index=False))
+        print("\n[OK] Graphique SHAP sauvegardé : shap_importance.png")
+
+    except Exception as e:
+        print(f"[ATTENTION] Erreur SHAP : {e}. Cela arrive parfois avec certains modèles.")
+
+    # 5. Sauvegarde des métriques finales
+    df_results.to_csv('models/evaluation_results.csv', index=False)
 
 if __name__ == "__main__":
-    # Configuration des chemins
-    DATA_FILE = 'data/bone-marrow.arff' 
-    MODEL_FILE = 'modele_gb.pkl' 
-    
-    run_evaluation(DATA_FILE, MODEL_FILE)
+    run_evaluation()
