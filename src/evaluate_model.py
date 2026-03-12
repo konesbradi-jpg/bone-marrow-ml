@@ -5,132 +5,114 @@ import seaborn as sns
 import shap
 import numpy as np
 import os
-from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc, roc_auc_score
-
-# Import de ta fonction de nettoyage
-from data_processing import load_and_clean_data
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix, roc_curve
 
 def run_evaluation():
-    print("\n" + "="*50)
-    print("--- DÉMARRAGE DE L'ÉVALUATION ---")
-    print("="*50)
+    print("\n" + "="*70)
+    print("--- DÉMARRAGE DE L'ÉVALUATION COMPARATIVE ---")
+    print("="*70)
 
-    # 1. Chargement des données de test (sauvegardées par train_model.py)
+    # 1. Chargement des données de test
     try:
         X_test = pd.read_csv('data/X_test.csv')
-        y_test = pd.read_csv('data/y_test.csv')
+        y_test = pd.read_csv('data/y_test.csv').values.ravel() # Assurer le format 1D
         print("[OK] Données de test chargées.")
     except FileNotFoundError:
-        print("[ERREUR] Fichiers de test introuvables. Lancez d'abord train_model.py")
+        print("[ERREUR] Fichiers de test introuvables. Lancez train_model.py d'abord.")
         return
 
-    # 2. Sélection et chargement du modèle (On prend Random Forest par défaut)
-    model_path = 'models/random_forest.pkl' # Tu peux changer par xgboost.pkl ou svm.pkl
-    if not os.path.exists(model_path):
-        print(f"[ERREUR] Modèle {model_path} introuvable.")
-        return
+    # 2. Liste des modèles à tester
+    model_names = ["random_forest", "xgboost", "svm", "lightgbm"]
+    results = []
+    trained_models = {}
+
+    print(f"\n{'Modèle':<15} | {'Acc':<6} | {'Prec':<6} | {'Rec':<6} | {'F1':<6} | {'AUC':<6}")
+    print("-" * 70)
+
+    for name in model_names:
+        path = f'models/{name}.pkl'
+        if os.path.exists(path):
+            model = joblib.load(path)
+            trained_models[name] = model
+            
+            # Prédictions
+            y_pred = model.predict(X_test)
+            
+            # Probabilités pour l'AUC
+            if hasattr(model, "predict_proba"):
+                y_prob = model.predict_proba(X_test)[:, 1]
+            else:
+                y_prob = model.decision_function(X_test)
+
+            # Calcul des métriques
+            metrics = {
+                "Modèle": name,
+                "Accuracy": accuracy_score(y_test, y_pred),
+                "Precision": precision_score(y_test, y_pred),
+                "Recall": recall_score(y_test, y_pred),
+                "F1": f1_score(y_test, y_pred),
+                "ROC-AUC": roc_auc_score(y_test, y_prob)
+            }
+            results.append(metrics)
+
+            print(f"{name:<15} | {metrics['Accuracy']:.3f} | {metrics['Precision']:.3f} | "
+                  f"{metrics['Recall']:.3f} | {metrics['F1']:.3f} | {metrics['ROC-AUC']:.3f}")
+
+    # 3. Choisir le meilleur modèle (Basé sur le ROC-AUC)
+    df_results = pd.DataFrame(results)
+    best_model_name = df_results.sort_values(by="ROC-AUC", ascending=False).iloc[0]["Modèle"]
+    best_model = trained_models[best_model_name]
     
-    model = joblib.load(model_path)
-    print(f"[OK] Modèle {model_path} chargé.")
+    print("\n" + "="*70)
+    print(f"🏆 LE MEILLEUR MODÈLE EST : {best_model_name.upper()}")
+    print("="*70)
 
-    # 3. Prédictions
-    y_pred = model.predict(X_test)
-    y_prob = model.predict_proba(X_test)[:, 1]
+    # Sauvegarder le meilleur modèle pour l'interface Streamlit
+    joblib.dump(best_model, 'models/best_model.pkl')
+    print(f"[OK] Meilleur modèle sauvegardé sous : models/best_model.pkl")
 
-    # 4. Rapport de classification (Precision, Recall, F1)
-    print("\n--- RÉSULTATS DES MÉTRIQUES (Exigence Projet) ---")
-    report = classification_report(y_test, y_pred)
-    print(report)
+    # 4. Analyse SHAP pour le MEILLEUR MODÈLE
+    print(f"\n--- ANALYSE SHAP POUR {best_model_name.upper()} ---")
     
-    auc_score = roc_auc_score(y_test, y_prob)
-    print(f"ROC-AUC Score : {auc_score:.4f}")
+    # Utilisation d'un explainer générique pour plus de stabilité
+    try:
+        if best_model_name == "svm":
+            # SVM nécessite un explainer spécifique ou un échantillon plus petit
+            explainer = shap.KernelExplainer(best_model.predict, shap.sample(X_test, 10))
+            sv = explainer.shap_values(X_test)
+        else:
+            # Pour les modèles à base d'arbres (RF, XGB, LGBM)
+            explainer = shap.TreeExplainer(best_model)
+            sv = explainer.shap_values(X_test)
 
-    # 5. Sauvegarde des graphiques de performance
-    plt.figure(figsize=(12, 5))
+        # Gestion de la structure SHAP (classe 1)
+        if isinstance(sv, list):
+            sv = sv[1]
+        elif len(sv.shape) == 3:
+            sv = sv[:, :, 1]
 
-    # Matrice de Confusion
-    plt.subplot(1, 2, 1)
-    cm = confusion_matrix(y_test, y_pred)
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
-    plt.title('Matrice de Confusion')
-    plt.xlabel('Prédictions')
-    plt.ylabel('Réalité')
+        # Graphique Importance
+        plt.figure(figsize=(10, 6))
+        shap.summary_plot(sv, X_test, plot_type="bar", show=False)
+        plt.title(f"Importance des variables - {best_model_name}")
+        plt.tight_layout()
+        plt.savefig("shap_importance.png")
+        
+        # Top 10 console
+        importance_df = pd.DataFrame({
+            'Feature': X_test.columns,
+            'Importance': np.abs(sv).mean(axis=0)
+        }).sort_values(by='Importance', ascending=False)
 
-    # Courbe ROC
-    plt.subplot(1, 2, 2)
-    fpr, tpr, _ = roc_curve(y_test, y_prob)
-    plt.plot(fpr, tpr, color='darkorange', label=f'AUC = {auc_score:.2f}')
-    plt.plot([0, 1], [0, 1], color='navy', linestyle='--')
-    plt.title('Courbe ROC')
-    plt.legend()
+        print("\n--- TOP 10 FEATURES (FACTEURS MÉDICAUX CLÉS) ---")
+        print(importance_df.head(10).to_string(index=False))
+        print("\n[OK] Graphique SHAP sauvegardé : shap_importance.png")
 
-    plt.tight_layout()
-    plt.savefig("evaluation_metrics.png")
-    print("\n[OK] Graphiques de performance sauvegardés : evaluation_metrics.png")
+    except Exception as e:
+        print(f"[ATTENTION] Erreur SHAP : {e}. Cela arrive parfois avec certains modèles.")
 
-# 6. Analyse SHAP (Exigence Projet : ML EXPLICABLE)
-    print("\n--- ANALYSE SHAP (Interprétabilité) ---")
-    
-    explainer = shap.TreeExplainer(model)
-    shap_values = explainer.shap_values(X_test)
-
-    # Gestion de la structure des données SHAP pour Random Forest
-    if isinstance(shap_values, list):
-        # Pour Random Forest sklearn, on prend la classe 1 (index 1)
-        sv = shap_values[1]
-    elif len(shap_values.shape) == 3:
-        # Si c'est un tableau 3D, on prend les valeurs de la classe positive
-        sv = shap_values[:, :, 1]
-    else:
-        sv = shap_values
-
-    # Calcul de l'importance moyenne (doit être un vecteur 1D)
-    # On s'assure que le résultat est bien un tableau numpy simple
-    global_importance = np.abs(sv).mean(axis=0)
-
-    # Graphique Importance Globale
-    plt.figure()
-    shap.summary_plot(sv, X_test, plot_type="bar", show=False)
-    plt.title("Importance globale des caractéristiques (SHAP)")
-    plt.tight_layout()
-    plt.savefig("shap_importance.png")
-    
-    # Création du tableau Top 10
-    importance_df = pd.DataFrame({
-        'Caractéristique': X_test.columns,
-        'Importance SHAP': global_importance
-    }).sort_values(by='Importance SHAP', ascending=False)
-
-    print("\n--- TOP 10 DES CARACTÉRISTIQUES LES PLUS INFLUENTES ---")
-    print(importance_df.head(10).to_string(index=False))
-    
-    # Création de l'explainer
-    explainer = shap.TreeExplainer(model)
-    shap_values = explainer.shap_values(X_test)
-
-    # Cas particulier pour RandomForest de sklearn (souvent renvoie une liste pour chaque classe)
-    if isinstance(shap_values, list):
-        # On prend les valeurs pour la classe 1 (succès de la greffe)
-        sv = shap_values[1]
-    else:
-        sv = shap_values
-
-    # Graphique Importance Globale
-    plt.figure()
-    shap.summary_plot(sv, X_test, plot_type="bar", show=False)
-    plt.title("Importance globale des caractéristiques (SHAP)")
-    plt.tight_layout()
-    plt.savefig("shap_importance.png")
-    
-    # Calcul manuel du Top 10 pour l'affichage console
-    importance_df = pd.DataFrame({
-        'Caractéristique': X_test.columns,
-        'Importance SHAP': np.abs(sv).mean(axis=0)
-    }).sort_values(by='Importance SHAP', ascending=False)
-
-    print("\n--- TOP 10 DES CARACTÉRISTIQUES LES PLUS INFLUENTES ---")
-    print(importance_df.head(10).to_string(index=False))
-    print("\n[OK] Analyse SHAP terminée. Graphique sauvegardé : shap_importance.png")
+    # 5. Sauvegarde des métriques finales
+    df_results.to_csv('models/evaluation_results.csv', index=False)
 
 if __name__ == "__main__":
     run_evaluation()
