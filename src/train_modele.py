@@ -1,71 +1,73 @@
 import pandas as pd
+import os
 import joblib
-from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.impute import SimpleImputer
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.metrics import classification_report
+from sklearn.svm import SVC
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
+from sklearn.model_selection import train_test_split
+from imblearn.over_sampling import SMOTE
 
-# 1. Chargement des données via votre module (Correction du format ARFF)
-from src.data_processing import load_and_clean_data
+# Importation de tes fonctions de nettoyage
+from data_processing import load_and_preprocess, optimize_memory
 
-print("Chargement des données en cours...")
-df = load_and_clean_data('data/bone-marrow.arff')
+def train_and_save_models():
+    # 1. Création du dossier pour les modèles s'il n'existe pas
+    if not os.path.exists('models'):
+        os.makedirs('models')
 
-# 2. Séparation des caractéristiques (X) et de la cible (y)
-# Correction : Le nom identifié est 'survival_status'
-target = 'survival_status'
-X = df.drop(target, axis=1)
-y = df[target]
+    # 2. Chargement des données
+    # REMPLACE 'data/dataset.csv' par le nom exact de ton fichier
+    print("[1/5] Chargement et optimisation des données...")
+    try:
+        df = pd.read_csv('data/bone-marrow.csv') # Vérifie le nom du fichier !
+    except FileNotFoundError:
+        print("Erreur : Place le fichier CSV dans le dossier 'data/'")
+        return
 
-# 3. Identification des colonnes par type
-numeric_features = X.select_dtypes(include=['int64', 'float64', 'int32', 'float32']).columns
-categorical_features = X.select_dtypes(include=['object']).columns
+    # Optimisation mémoire (exigence PDF)
+    df, start_mem, end_mem = optimize_memory(df)
+    print(f"Mémoire optimisée : {start_mem:.2f}MB -> {end_mem:.2f}MB")
 
-# 4. Création des transformateurs (Nettoyage automatique)
-numeric_transformer = Pipeline(steps=[
-    ('imputer', SimpleImputer(strategy='median')),
-    ('scaler', StandardScaler())
-])
+    # 3. Prétraitement simple (à adapter selon ton dataset)
+    # On suppose que la colonne cible est 'target'
+    # Supprime les colonnes inutiles ou gère les valeurs manquantes
+    df = df.fillna(df.median(numeric_only=True))
+    X = df.drop('target', axis=1) # Remplace 'target' par le nom de ta colonne
+    y = df['target']
+    
+    # Encodage des variables catégorielles (ex: sexe, type de maladie)
+    X = pd.get_dummies(X, drop_first=True)
 
-categorical_transformer = Pipeline(steps=[
-    # Correction : Utilisation de 'most_frequent' pour la cohérence médicale
-    ('imputer', SimpleImputer(strategy='most_frequent')),
-    ('onehot', OneHotEncoder(handle_unknown='ignore'))
-])
+    # 4. Division et Gestion du déséquilibre avec SMOTE (exigence PDF)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    print("[2/5] Application de SMOTE pour équilibrer les classes...")
+    smote = SMOTE(random_state=42)
+    X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
 
-# 5. Combinaison des transformations
-preprocessor = ColumnTransformer(
-    transformers=[
-        ('num', numeric_transformer, numeric_features),
-        ('cat', categorical_transformer, categorical_features)
-    ])
+    # Sauvegarde des données de test pour evaluate_model.py
+    X_test.to_csv('data/X_test.csv', index=False)
+    y_test.to_csv('data/y_test.csv', index=False)
+    # Sauvegarde des colonnes pour l'interface Streamlit
+    joblib.dump(X.columns.tolist(), 'models/features.pkl')
 
-# 6. Création du Pipeline final avec le modèle
-# Correction : Ajout de class_weight='balanced' pour le déséquilibre (60/40)
-model_pipeline = Pipeline(steps=[
-    ('preprocessor', preprocessor),
-    ('classifier', RandomForestClassifier(
-        n_estimators=100, 
-        class_weight='balanced', 
-        random_state=42
-    ))
-])
+    # 5. Entraînement des modèles
+    models = {
+        "random_forest": RandomForestClassifier(n_estimators=100, random_state=42),
+        "xgboost": XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42),
+        "svm": SVC(probability=True, random_state=42),
+        "lightgbm": LGBMClassifier(random_state=42)
+    }
 
-# 7. Division Entraînement / Test
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    print("[3/5] Entraînement des modèles (cela peut prendre un moment)...")
+    for name, model in models.items():
+        print(f"Entraînement de {name}...")
+        model.fit(X_train_res, y_train_res)
+        # Sauvegarde de chaque modèle en format .pkl
+        joblib.dump(model, f'models/{name}.pkl')
+    
+    print("[4/5] Modèles sauvegardés avec succès dans le dossier 'models/'")
 
-# 8. Entraînement
-print("Entraînement du modèle en cours...")
-model_pipeline.fit(X_train, y_train)
-
-# 9. Évaluation rapide
-print("\n--- ÉVALUATION SUR LE SET DE TEST ---")
-y_pred = model_pipeline.predict(X_test)
-print(classification_report(y_test, y_pred))
-
-# 10. Sauvegarde du modèle (indispensable pour le fichier d'évaluation)
-joblib.dump(model_pipeline, 'modele_final.pkl')
-print("\nSuccès : Le fichier 'modele_final.pkl' a été généré !")
+if __name__ == "__main__":
+    train_and_save_models()
