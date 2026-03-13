@@ -1,63 +1,93 @@
 import pandas as pd
 import numpy as np
-from scipy.io import arff
+import joblib
+import os
+from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.preprocessing import RobustScaler
+from sklearn.impute import KNNImputer
+from sklearn.metrics import classification_report, balanced_accuracy_score
+from imblearn.combine import SMOTETomek
+from imblearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier
 
-def load_and_clean_data(file_path):
-    """
-    Charge le fichier .arff et remplace les '?' par des valeurs nulles.
-    """
-    # Chargement du fichier ARFF [cite: 17]
-    data, meta = arff.loadarff(file_path)
-    df = pd.DataFrame(data)
-    
-    # Remplacement des '?' par NaN (en gérant le format bytes habituel des ARFF) 
-    df = df.replace(b'?', np.nan)
-    
-    # Conversion en numérique pour les colonnes qui le permettent
-    df = df.apply(pd.to_numeric, errors='ignore')
-    
-    return df
+# 1. CONFIGURATION
+TARGET = 'survival_status'
+# On retire tout ce qui arrive APRÈS la greffe (Data Leakage)
+COLS_TO_DROP = ['survival_time', 'time_to_aGvHD_III_IV', 'PLTrecovery', 'ANCrecovery', 'extcGvHD', 'aGvHDIIIIV']
 
-def optimize_memory(df):
+def build_robust_pipeline(X_train, y_train):
     """
-    Optimise l'usage mémoire en ajustant les types de données (ex: float64 vers float32).
-    Exigence du projet 4. [cite: 49]
+    Construit un pipeline qui gère les trous, l'échelle, 
+    le déséquilibre et l'entraînement de manière isolée.
     """
-    start_mem = df.memory_usage().sum() / 1024**2
     
-    for col in df.columns:
-        col_type = df[col].dtype
+    # Calcul automatique du poids des classes pour compenser le déséquilibre
+    # Si on a 80% survie / 20% mort, le poids de la mort sera de 4.
+    counts = np.bincount(y_train)
+    weight_ratio = counts[1] / counts[0]
+    
+    pipeline = Pipeline([
+        # A. Remplissage des trous (KNN cherche les voisins proches pour deviner)
+        ('imputer', KNNImputer(n_neighbors=5)),
         
-        if col_type != object:
-            c_min = df[col].min()
-            c_max = df[col].max()
-            
-            # Optimisation des entiers [cite: 49]
-            if str(col_type)[:3] == 'int':
-                if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max:
-                    df[col] = df[col].astype(np.int8)
-                elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
-                    df[col] = df[col].astype(np.int32)
-            
-            # Optimisation des flottants [cite: 49]
-            else:
-                if c_min > np.finfo(np.float32).min and c_max < np.finfo(np.float32).max:
-                    df[col] = df[col].astype(np.float32)
-                    
-    end_mem = df.memory_usage().sum() / 1024**2
-    print(f'Mémoire avant: {start_mem:.2f} MB - Après: {end_mem:.2f} MB') 
-    return df
-
-def handle_missing_values(df):
-    """
-    Stratégie de traitement des valeurs manquantes identifiées lors de l'EDA. 
-    """
-    # Exemple : Remplissage par la médiane pour les colonnes numériques
-    for col in df.select_dtypes(include=[np.number]).columns:
-        df[col] = df[col].fillna(df[col].median())
-    
-    # Remplissage par le mode pour les colonnes catégorielles
-    for col in df.select_dtypes(include=[object]).columns:
-        df[col] = df[col].fillna(df[col].mode()[0])
+        # B. Mise à l'échelle robuste (ne craint pas les valeurs extrêmes de poids ou d'âge)
+        ('scaler', RobustScaler()),
         
-    return df
+        # C. Rééquilibrage hybride (SMOTE crée + Tomek Links nettoie)
+        ('resampler', SMOTETomek(random_state=42)),
+        
+        # D. Modèle avec poids de classe intégré
+        ('classifier', RandomForestClassifier(
+            n_estimators=500,
+            max_depth=7,            # Profondeur limitée pour petit dataset (évite l'overfitting)
+            class_weight={0: weight_ratio * 1.5, 1: 1}, # On sur-pénalise l'erreur sur le décès
+            random_state=42
+        ))
+    ])
+    
+    return pipeline
+
+def train_medical_model():
+    if not os.path.exists('models'): os.makedirs('models')
+
+    # Chargement
+    df = pd.read_csv('data/bone-marrow.csv').replace('?', np.nan)
+    
+    # Nettoyage
+    drops = [c for c in COLS_TO_DROP if c in df.columns]
+    df = df.drop(columns=drops)
+    
+    # Encodage (One-Hot)
+    X = df.drop(TARGET, axis=1)
+    y = df[TARGET].astype(int)
+    X = pd.get_dummies(X)
+    
+    # Division Stratifiée (garde la même proportion de morts dans train et test)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    # Sauvegarde des colonnes pour Streamlit
+    joblib.dump(X.columns.tolist(), 'models/features.pkl')
+    # Sauvegarde des valeurs par défaut pour l'imputation manuelle au cas où
+    joblib.dump(X_train.median(), 'models/impute_values.pkl')
+
+    print(f"Entraînement sur {len(X_train)} patients...")
+    
+    # Création et entraînement
+    model_pipeline = build_robust_pipeline(X_train, y_train)
+    model_pipeline.fit(X_train, y_train)
+
+    # Évaluation
+    y_pred = model_pipeline.predict(X_test)
+    
+    print("\n=== RAPPORT DE PERFORMANCE MÉDICALE ===")
+    print(classification_report(y_test, y_pred))
+    print(f"Score équilibré : {balanced_accuracy_score(y_test, y_pred):.2%}")
+
+    # Sauvegarde du pipeline complet (incluant l'imputer et le scaler)
+    joblib.dump(model_pipeline, 'models/best_model.pkl')
+    print("\nPipeline sauvegardé dans models/best_model.pkl")
+
+if __name__ == "__main__":
+    train_medical_model()
