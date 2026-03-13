@@ -1,88 +1,85 @@
 import pandas as pd
-import os
-import joblib
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
-from xgboost import XGBClassifier
+import joblib
+import os
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
-from imblearn.over_sampling import SMOTE
+from sklearn.preprocessing import RobustScaler
+from sklearn.impute import KNNImputer
+from sklearn.metrics import classification_report, confusion_matrix
+from imblearn.combine import SMOTETomek
+from imblearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier
 
-# 1. Liste des colonnes de "Fuite de données" à supprimer impérativement
-# Ces colonnes donnent la réponse au modèle avant qu'il ne réfléchisse
-COLS_TO_DROP = ['survival_time', 'time_to_aGvHD_III_IV', 'PLTrecovery', 'ANCrecovery']
+# --- CONFIGURATION ---
+TARGET = 'survival_status'  # 1 = Mort, 0 = Survie
+COLS_TO_DROP = ['survival_time', 'time_to_aGvHD_III_IV', 'PLTrecovery', 'ANCrecovery', 'extcGvHD', 'aGvHDIIIIV']
 
-def train_and_save_models():
-    if not os.path.exists('models'):
-        os.makedirs('models')
-
-    print("[1/5] Chargement des données...")
-    try:
-        # Remplacez par le nom exact de votre fichier
-        df = pd.read_csv('data/bone-marrow.csv') 
-    except FileNotFoundError:
-        print("Erreur : Fichier CSV introuvable dans 'data/'")
-        return
-
-    # --- ÉTAPE CRUCIALE : NETTOYAGE ---
-    # Remplacer 'target' par le nom réel de votre colonne cible (ex: 'survival_status')
-    TARGET_COL = 'survival_status' 
+def build_robust_pipeline(X_train, y_train):
+    """
+    Pipeline configuré pour prioriser la détection de la classe 1 (Mort).
+    """
+    # Calcul du ratio de déséquilibre
+    counts = np.bincount(y_train)
+    # Ratio = Nombre de survies (0) / Nombre de morts (1)
+    # Si ratio = 5, une erreur sur une 'Mort' coûtera 5x plus cher qu'une erreur sur une 'Survie'
+    weight_ratio = counts[0] / counts[1]
     
-    if TARGET_COL not in df.columns:
-        # Si vous n'avez pas renommé votre colonne cible, on essaie de la deviner
-        # Souvent c'est la dernière colonne ou une colonne binaire
-        print(f"Attention: {TARGET_COL} non trouvé. Vérifiez le nom de la colonne cible.")
-        return
+    pipeline = Pipeline([
+        ('imputer', KNNImputer(n_neighbors=5)),
+        ('scaler', RobustScaler()),
+        ('resampler', SMOTETomek(random_state=42)),
+        ('classifier', RandomForestClassifier(
+            n_estimators=500,
+            max_depth=8,
+            # On donne beaucoup plus de poids à la classe 1 (Mort)
+            class_weight={1: weight_ratio * 2, 0: 1}, 
+            random_state=42
+        ))
+    ])
+    return pipeline
 
-    # Suppression des fuites de données
-    existing_drops = [c for c in COLS_TO_DROP if c in df.columns]
-    df = df.drop(columns=existing_drops)
+def train_medical_model():
+    if not os.path.exists('models'): os.makedirs('models')
 
-    # Gestion des valeurs manquantes (médiane pour le numérique)
-    df = df.replace('?', np.nan) # Si le dataset contient des '?'
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            df[col] = df[col].fillna(df[col].mode()[0])
-        else:
-            df[col] = df[col].fillna(df[col].median())
-
-    # --- ÉTAPE CRUCIALE : ENCODAGE ---
-    # On transforme les catégories en chiffres
-    X = df.drop(TARGET_COL, axis=1)
-    y = df[TARGET_COL].astype(int)
-
-    # On utilise get_dummies mais on sauvegarde l'ordre des colonnes !
+    # 1. Chargement et Nettoyage
+    print("[1/4] Chargement et suppression du leakage...")
+    df = pd.read_csv('data/bone-marrow.csv').replace('?', np.nan)
+    
+    # Supprimer les colonnes de fuite (le futur)
+    drops = [c for c in COLS_TO_DROP if c in df.columns]
+    df = df.drop(columns=drops)
+    
+    # 2. Préparation des données
+    X = df.drop(TARGET, axis=1)
+    y = df[TARGET].astype(int)
+    
+    # Encodage catégoriel
     X = pd.get_dummies(X)
     
-    # On sauvegarde la liste EXACTE des colonnes pour Streamlit
-    model_features = X.columns.tolist()
-    joblib.dump(model_features, 'models/features.pkl')
+    # Division Stratifiée (très important pour les petits datasets)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
 
-    # 4. Division et SMOTE
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    # Sauvegarde des métadonnées
+    joblib.dump(X.columns.tolist(), 'models/features.pkl')
+
+    # 3. Entraînement du Pipeline
+    print(f"[2/4] Entraînement sur {len(X_train)} patients (Cible 1 = Mort)...")
+    model_pipeline = build_robust_pipeline(X_train, y_train)
+    model_pipeline.fit(X_train, y_train)
+
+    # 4. Évaluation spécialisée
+    y_pred = model_pipeline.predict(X_test)
+    print("\n=== RAPPORT DE PERFORMANCE MÉDICALE ===")
+    print(classification_report(y_test, y_pred, target_names=['Survie (0)', 'Mort (1)']))
     
-    print("[2/5] Application de SMOTE...")
-    smote = SMOTE(random_state=42)
-    X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
+    print("\nMATRICE DE CONFUSION :")
+    print(confusion_matrix(y_test, y_pred))
 
-    # 5. Entraînement
-    models = {
-        "random_forest": RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42),
-        "xgboost": XGBClassifier(random_state=42),
-        "best_model": RandomForestClassifier(n_estimators=200, random_state=42) # Modèle par défaut pour l'interface
-    }
-
-    print("[3/5] Entraînement et validation...")
-    for name, model in models.items():
-        model.fit(X_train_res, y_train_res)
-        y_pred = model.predict(X_test)
-        
-        print(f"\n--- Rapport pour {name} ---")
-        print(classification_report(y_test, y_pred))
-        
-        joblib.dump(model, f'models/{name}.pkl')
-    
-    print("\n[4/5] Succès ! Modèles et liste des features sauvegardés.")
+    # Sauvegarde
+    joblib.dump(model_pipeline, 'models/best_model.pkl')
+    print("\n[4/4] Pipeline sauvegardé avec succès.")
 
 if __name__ == "__main__":
-    train_and_save_models()
+    train_medical_model()
