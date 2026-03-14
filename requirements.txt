@@ -1,11 +1,24 @@
 pandas
 numpy
+<<<<<<< HEAD
 matplotlib
 seaborn
+=======
+>>>>>>> 66debb900212697f87d49a69e294f90032729b57
 scikit-learn
 xgboost
 lightgbm
 shap
 streamlit
+<<<<<<< HEAD
 pytest
 scipy
+=======
+matplotlib
+seaborn
+joblib
+scipy
+pytest
+pytest-cov
+imbalanced-learn
+>>>>>>> 66debb900212697f87d49a69e294f90032729b57
