@@ -278,7 +278,7 @@ with st.sidebar:
 
     # ── Receveur ─────────────────────────────────────────────
     st.markdown("### 👤 Receveur")
-    val_p_age    = st.slider("Âge (ans)", 0.0, 20.0, 9.0, 0.5)
+    val_p_age    = st.number_input("Âge (ans)", 0.0, 20.0, 9.0, 0.01)
     val_p_mass   = st.number_input("Masse corporelle (kg)", 6.0, 104.0, 35.0, 0.5)
     val_p_gender = st.selectbox("Sexe", ["Masculin", "Féminin"])
     val_p_cmv    = st.selectbox("Statut CMV receveur", ["Négatif", "Positif"])
@@ -290,7 +290,7 @@ with st.sidebar:
 
     # ── Donneur ───────────────────────────────────────────────
     st.markdown("### 🧬 Donneur")
-    val_d_age    = st.slider("Âge donneur (ans)", 18.0, 56.0, 33.0, 0.5)
+    val_d_age    = st.number_input("Âge donneur (ans)", 18.0, 56.0, 33.0, 0.01)
     val_d_abo    = st.selectbox("Groupe ABO donneur", ["O", "A", "B", "AB"])
     val_d_cmv    = st.selectbox("Statut CMV donneur", ["Négatif", "Positif"])
     val_genderm  = st.selectbox("Concordance de genre", ["Autre", "Femme→Homme"])
@@ -373,8 +373,8 @@ def build_input() -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────────────────────
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 chips = [
-    (c1, "👤 Receveur",   f"{val_p_age:.0f} ans · {val_p_mass:.0f} kg"),
-    (c2, "🧬 Donneur",    f"{val_d_age:.0f} ans · {val_d_abo}"),
+    (c1, "👤 Receveur",   f"{val_p_age:.2f} ans · {val_p_mass:.1f} kg"),
+    (c2, "🧬 Donneur",    f"{val_d_age:.2f} ans · {val_d_abo}"),
     (c3, "🔬 HLA",        val_hla.split()[0]),
     (c4, "💉 CD34+",      f"{val_cd34:.1f} ×10⁶/kg"),
     (c5, "🦠 Maladie",    val_disease),
