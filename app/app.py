@@ -201,3 +201,4 @@ if st.button("📊 LANCER L'ANALYSE DU DIAGNOSTIC"):
 st.divider()
 st.caption("⚕️ Note : Cette IA est un outil d'assistance. Le diagnostic final doit être validé par un hématologue.")
 st.markdown('</div>', unsafe_allow_html=True)
+
