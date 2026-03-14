@@ -101,15 +101,18 @@ Pipeline de prétraitement — Greffe de moelle osseuse pédiatrique
 ================================================================
 Améliorations par rapport à la version originale :
   - Chargement natif du fichier .arff (scipy)
+  - Remplacement des '?' (valeurs manquantes masquées) par np.nan dès le chargement
+    → 69 valeurs manquantes supplémentaires détectées (dont extcGvHD : 31/187 = 17%)
   - Séparation claire des colonnes numériques / catégorielles / binaires
   - Imputation ciblée : KNN pour le numérique, mode pour le catégoriel
-    (le KNN sur des données encodées en entiers est sémantiquement non-fiable)
-  - optimize_memory APRÈS l'imputation pour ne pas dégrader la précision du KNN
+  - optimize_memory APRÈS l'imputation (précision KNN préservée)
   - Encodage OHE propre avant le split (pas après)
   - SMOTE appliqué uniquement sur le train set (pas de fuite)
+  - Sauvegarde de X_test / y_test pour evaluate_model.py
   - Logging clair à chaque étape
 """
 
+import os
 import pandas as pd
 import numpy as np
 from scipy.io import arff
@@ -129,18 +132,30 @@ log = logging.getLogger(__name__)
 
 def load_arff(filepath: str) -> pd.DataFrame:
     """
-    Charge un fichier .arff et décode les bytes en str.
-    Retourne un DataFrame pandas propre.
+    Charge un fichier .arff, décode les bytes en str,
+    et remplace les '?' par np.nan.
+
+    Pourquoi remplacer '?' ?
+    Le format ARFF encode les valeurs manquantes catégorielles comme '?'.
+    Sans ce remplacement, '?' est traité comme une vraie catégorie et crée
+    de fausses colonnes (ex: CMVstatus_?, extcGvHD_?) après OHE, polluant
+    les features vues par les modèles.
+    Résultat sur ce dataset : 69 valeurs manquantes supplémentaires détectées.
     """
     data, meta = arff.loadarff(filepath)
     df = pd.DataFrame(data)
 
-    # Les colonnes catégorielles sont encodées en bytes par scipy → on décode
+    # Décodage bytes → str
     for col in df.select_dtypes(include=["object"]).columns:
         df[col] = df[col].str.decode("utf-8")
 
+    # Remplacement des '?' par NaN (convention ARFF pour les valeurs manquantes)
+    df.replace("?", np.nan, inplace=True)
+
+    total_nan = df.isnull().sum().sum()
     log.info(f"Dataset chargé : {df.shape[0]} lignes, {df.shape[1]} colonnes")
-    log.info(f"Valeurs manquantes :\n{df.isnull().sum()[df.isnull().sum() > 0]}")
+    log.info(f"Total valeurs manquantes (NaN + '?') : {total_nan}")
+    log.info(f"Détail :\n{df.isnull().sum()[df.isnull().sum() > 0]}")
     return df
 
 
@@ -163,7 +178,7 @@ def impute(df: pd.DataFrame, n_neighbors: int = 5) -> pd.DataFrame:
 
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     # "str" explicite requis pour pandas 4+ (include="object" déprécié pour str)
-    cat_cols = df.select_dtypes(include=["object", "category", "str"]).columns.tolist()
+    cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
 
     missing_num = df[num_cols].isnull().sum()
     missing_cat = df[cat_cols].isnull().sum()
@@ -182,7 +197,7 @@ def impute(df: pd.DataFrame, n_neighbors: int = 5) -> pd.DataFrame:
     if df[cat_cols].isnull().any().any():
         imp_cat = SimpleImputer(strategy="most_frequent")
         df[cat_cols] = imp_cat.fit_transform(df[cat_cols])
-        log.info(f"Mode imputation appliquée sur les colonnes catégorielles.")
+        log.info("Mode imputation appliquée sur les colonnes catégorielles.")
 
     assert df.isnull().sum().sum() == 0, "Il reste des NaN après imputation !"
     return df
@@ -252,7 +267,7 @@ def encode_split_resample(
     Retourne : X_train_res, X_test, y_train_res, y_test
     """
     # 1. OHE — on exclut la cible
-    cat_cols = df.select_dtypes(include=["object", "category", "str"]).columns.tolist()
+    cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
     if "target" in cat_cols:
         cat_cols.remove("target")
 
@@ -280,21 +295,57 @@ def encode_split_resample(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. PIPELINE COMPLET
+# 6. SAUVEGARDE DES DONNÉES DE TEST
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_test_data(
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    output_dir: str = "data",
+) -> None:
+    """
+    Sauvegarde X_test et y_test en CSV pour evaluate_model.py.
+    Doit être appelé AVANT l'entraînement, APRÈS le split.
+
+    Pourquoi sauvegarder ici et pas dans evaluate_model.py ?
+    Le split doit toujours utiliser le même random_state pour que les données
+    de test soient identiques à celles vues pendant l'entraînement.
+    Sauvegarder depuis le pipeline garantit la cohérence.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    X_test.to_csv(os.path.join(output_dir, "X_test.csv"), index=False)
+    y_test.to_csv(os.path.join(output_dir, "y_test.csv"), index=False)
+    log.info(f"X_test et y_test sauvegardés dans '{output_dir}/'")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. PIPELINE COMPLET
 # ─────────────────────────────────────────────────────────────────────────────
 
 def full_pipeline(
     filepath: str,
+    save_dir: str | None = "data",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
     """
     Pipeline complet :
       load → impute → optimize_memory → prepare_target → encode/split/SMOTE
+      → (optionnel) sauvegarde X_test / y_test
+
+    Paramètres
+    ----------
+    filepath : chemin vers le fichier .arff
+    save_dir : dossier de sauvegarde de X_test/y_test (None pour désactiver)
     """
     df = load_arff(filepath)
     df = impute(df)
     df = optimize_memory(df)   # ← APRÈS imputation (précision KNN préservée)
     df = prepare_target(df)
-    return encode_split_resample(df)
+    X_train, X_test, y_train, y_test = encode_split_resample(df)
+
+    if save_dir is not None:
+        save_test_data(X_test, y_test, output_dir=save_dir)
+
+    return X_train, X_test, y_train, y_test
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -303,7 +354,8 @@ def full_pipeline(
 
 if __name__ == "__main__":
     X_train, X_test, y_train, y_test = full_pipeline(
-        "/home/claude/data/bone-marrow.arff"
+        "data/bone-marrow.arff",
+        save_dir="data",
     )
     print(f"\n✅ Pipeline terminé")
     print(f"   X_train : {X_train.shape}, y_train : {len(y_train)}")
