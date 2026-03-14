@@ -14,6 +14,7 @@ from sklearn.metrics import classification_report
 # 1. Configuration des chemins
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(BASE_DIR, "models")
+FINAL_MODEL_DIR = os.path.join(BASE_DIR, "modele_final") # Nouveau dossier
 DATA_DIR = os.path.join(BASE_DIR, "data")
 DATA_PATH = os.path.join(DATA_DIR, "bone-marrow.csv")
 
@@ -50,6 +51,7 @@ def clean_data(path):
 def train_medical_models():
     # Création des dossiers si nécessaire
     os.makedirs(MODELS_DIR, exist_ok=True)
+    os.makedirs(FINAL_MODEL_DIR, exist_ok=True) # Création du dossier final
     os.makedirs(DATA_DIR, exist_ok=True)
 
     # 1. Chargement et nettoyage
@@ -63,12 +65,14 @@ def train_medical_models():
     numeric_features = X.select_dtypes(include=['int64', 'float64']).columns.tolist()
     categorical_features = X.select_dtypes(include=['object']).columns.tolist()
 
-    # Sauvegarde des infos de colonnes pour app.py
-    joblib.dump({
+    # Sauvegarde des infos de colonnes pour app.py (dans les deux dossiers pour sécurité)
+    features_info = {
         'features': X.columns.tolist(),
         'numeric': numeric_features,
         'categorical': categorical_features
-    }, os.path.join(MODELS_DIR, 'features_info.pkl'))
+    }
+    joblib.dump(features_info, os.path.join(MODELS_DIR, 'features_info.pkl'))
+    joblib.dump(features_info, os.path.join(FINAL_MODEL_DIR, 'features_info.pkl'))
 
     # 3. Création du Pipeline de Prétraitement
     preprocessor = ColumnTransformer(transformers=[
@@ -94,8 +98,7 @@ def train_medical_models():
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    # --- ÉTAPE CRUCIALE : SAUVEGARDE DES DONNÉES DE TEST ---
-    # Pour que l'évaluation fonctionne plus tard
+    # Sauvegarde des données de test
     X_test.to_csv(os.path.join(DATA_DIR, "X_test_cleaned.csv"), index=False)
     y_test.to_csv(os.path.join(DATA_DIR, "y_test_cleaned.csv"), index=False)
     print(f"✅ Données de test sauvegardées dans {DATA_DIR}")
@@ -109,13 +112,16 @@ def train_medical_models():
     y_pred = full_pipeline.predict(X_test)
     print(classification_report(y_test, y_pred))
     
-    # 7. Sauvegarde du modèle
-    model_file = os.path.join(MODELS_DIR, 'best_model.pkl')
-    # On sauvegarde aussi une copie sous le nom générique utilisé par evaluate_model.py
-    joblib.dump(full_pipeline, model_file)
+    # 7. Sauvegarde du modèle final
+    # Sauvegarde dans le dossier 'models' pour les tests/évaluations
     joblib.dump(full_pipeline, os.path.join(MODELS_DIR, 'randomforest_model.pkl'))
     
-    print(f"\n💾 Modèles sauvegardés dans : {MODELS_DIR}")
+    # Sauvegarde dans le dossier 'modele_final' pour l'application de production
+    final_path = os.path.join(FINAL_MODEL_DIR, 'best_model.pkl')
+    joblib.dump(full_pipeline, final_path)
+    
+    print(f"\n💾 Modèle enregistré avec succès dans : {FINAL_MODEL_DIR}")
+    print(f"📄 Fichier : {os.path.basename(final_path)}")
     print("--- [4/4] Processus terminé ---")
 
 if __name__ == "__main__":
