@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 name: CI - Tests Automatises
 
 on:
@@ -24,3 +25,115 @@ jobs:
 
       - name: Lancer les tests
         run: pytest tests/test_data_processing.py -v
+=======
+name: HémoVision CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Tests — Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11"]
+
+    steps:
+      # ── 1. Récupération du code ──────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Installation de Python ────────────────────────────────
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # ── 3. Installation des dépendances ─────────────────────────
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+
+      # ── 4. Téléchargement du dataset UCI ────────────────────────
+      #    Le fichier .arff est requis par les tests d'intégration.
+      #    On le télécharge depuis UCI ML Repository.
+      - name: Download BMT dataset
+        run: |
+          mkdir -p data
+          python - <<'EOF'
+          import urllib.request, zipfile, os, shutil
+
+          url = "https://archive.ics.uci.edu/static/public/565/bone+marrow+transplant+children.zip"
+          zip_path = "data/bmt.zip"
+
+          print("Téléchargement du dataset...")
+          urllib.request.urlretrieve(url, zip_path)
+
+          print("Extraction...")
+          with zipfile.ZipFile(zip_path, "r") as z:
+              z.extractall("data/raw")
+
+          # Chercher le fichier .arff dans les sous-dossiers extraits
+          for root, dirs, files in os.walk("data/raw"):
+              for f in files:
+                  if f.endswith(".arff"):
+                      src = os.path.join(root, f)
+                      dst = "data/bone-marrow.arff"
+                      shutil.copy(src, dst)
+                      print(f"Dataset copié : {src} → {dst}")
+
+          os.remove(zip_path)
+          print("Prêt.")
+          EOF
+
+      # ── 5. Lancement des tests avec couverture ──────────────────
+      - name: Run tests
+        run: |
+          pytest tests/test_data_processing.py \
+            -v \
+            --tb=short \
+            --cov=src \
+            --cov-report=term-missing \
+            --cov-report=xml
+
+      # ── 6. Upload du rapport de couverture (optionnel) ───────────
+      - name: Upload coverage report
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          retention-days: 7
+
+  lint:
+    name: Lint (flake8)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install flake8
+        run: pip install flake8
+
+      - name: Run flake8
+        run: |
+          flake8 src/ tests/ \
+            --max-line-length=100 \
+            --extend-ignore=E203,W503 \
+            --exclude=__pycache__
+>>>>>>> 66debb900212697f87d49a69e294f90032729b57
