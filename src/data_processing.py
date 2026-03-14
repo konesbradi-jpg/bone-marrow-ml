@@ -80,7 +80,7 @@ def impute(df: pd.DataFrame, n_neighbors: int = 5) -> pd.DataFrame:
 
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     # "str" explicite requis pour pandas 4+ (include="object" déprécié pour str)
-    cat_cols = df.select_dtypes(include=["object", "category", "str"]).columns.tolist()
+    cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
 
     missing_num = df[num_cols].isnull().sum()
     missing_cat = df[cat_cols].isnull().sum()
@@ -169,7 +169,7 @@ def encode_split_resample(
     Retourne : X_train_res, X_test, y_train_res, y_test
     """
     # 1. OHE — on exclut la cible
-    cat_cols = df.select_dtypes(include=["object", "category", "str"]).columns.tolist()
+    cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
     if "target" in cat_cols:
         cat_cols.remove("target")
 
